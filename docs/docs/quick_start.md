@@ -320,7 +320,11 @@ To execute queries on deep1M, run the following command for the compiled codes (
 RaBitQ + HNSW receives raw data vectors as inputs. It first conducts KMeans using a Python script. The centroid vectors will be used in the normalization of data vectors for improving accuracy. 
 
 #### Perform Clustering using Faiss
-First, conduct [Kmeans clustering](https://github.com/VectorDB-NTU/RaBitQ-Library/blob/main/python/ivf.py) on raw data vectors to get centroid vectors. We recommend 16 centroids(clusters). This will produce two files: centroids file and cluster ids file.
+First, conduct [Kmeans clustering](https://github.com/VectorDB-NTU/RaBitQ-Library/blob/main/python/ivf.py) on raw data vectors to get centroid vectors. We recommend 16 centroids(clusters). This will save two files: centroids file and cluster ids file.
+Use the following command to conduct KMeans clustering on deep1M dataset.
+```shell
+python python/ivf.py deep1M/deep1M_base.fvecs 16 deep1M/deep1M_centroids_16.fvecs deep1M/deep1M_clusterids_16.ivecs l2
+```
 
 #### Example Code in C++ for index construction
 Second, load raw data, centroids, and cluster ids files to build the index. Index file is then saved.
@@ -426,7 +430,11 @@ int main(int argc, char* argv[]) {
 }
 
 ```
-
+After compilation (get an excutable named `hnsw_build`), run the following command to build the HNSW.
+```shell
+./hnsw_build deep1M/deep1M_base.fvecs deep1M/deep1M_centroids_16.fvecs deep1M/deep1M_clusterids_16.ivecs 16 100 5 deep1M/deep1M_c16_b5.index l2 true
+```
+This will build a HNSW that uses 5(1+4) bits to quantize each vector.
 
 #### Example Code in C++ for querying
 Third, load index, query and groundtruth files to test ANN Search.
@@ -547,6 +555,10 @@ int main(int argc, char* argv[]) {
         std::cout << efs[i] << '\t' << avg_qps[i] << '\t' << avg_recall[i] << '\t' << '\n';
     }
 }
+```
+To execute queries on deep1M, run the command for the executable(named `hnsw_query`) after compilation.
+```shell
+./hnsw_query deep1M/deep1M_c16_b5.index deep1M/deep1M_query.fvecs deep1M/deep1M_groundtruth.ivecs l2
 ```
 
 ## RaBitQ + QG ([SymphonyQG](https://dl.acm.org/doi/10.1145/3709730))
