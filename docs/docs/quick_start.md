@@ -2,10 +2,10 @@
 
 ## RaBitQ Quantizer
 
-The RaBitQ Library offers simple interfaces, making it a drop-in replacement for scalar and binary quantization. 
-The interface offers two underlying implementations of RaBitQ: one delivers optimal accuracy with longer quantization time, while the other provides near-optimal accuracy with significantly faster quantization.
+The RaBitQ Library provides simple interfaces, making it a drop-in replacement for scalar and binary quantization.
+The interface offers two underlying RaBitQ implementations: one delivers optimal accuracy with longer quantization time, and another delivers near-optimal accuracy with significantly faster quantization.
 
-The library provides advanced data formats for supporting efficient distance estimation. The details can be found in [Quantizer](rabitq/quantizer.md).
+The library provides advanced data formats to support efficient distance estimation. The details can be found in [Quantizer](rabitq/quantizer.md).
 
 ### Example Code in C++
 ```cpp
@@ -51,10 +51,10 @@ int main() {
 
 
 ## RaBitQ + IVF
-[IVF](https://dl.acm.org/doi/10.1109/TPAMI.2010.57) is a classical clustering-based ANN index. IVF + RaBitQ consumes minimum memory across IVF, HNSW and QG. Powered by [FastScan](https://arxiv.org/abs/1704.07355), it also achieves promising time-accuracy trade-off. To use RaBitQ + IVF, users need to cluster raw data vectors (e.g., using Kmeans), then to quantize each cluster and construct the IVF. The following is an example of using RaBitQ + IVF to search ANN on the deep1M dataset. 
+[IVF](https://dl.acm.org/doi/10.1109/TPAMI.2010.57) is a classical clustering-based ANN index. IVF + RaBitQ offers the lowest memory usage compared to IVF, HNSW and QG. Powered by [FastScan](https://arxiv.org/abs/1704.07355), it also provides a promising time-accuracy trade-off. To use RaBitQ + IVF, first cluster the raw vectors (e.g., via KMeans), then quantize each cluster and build the IVF index. Below is an example of using RaBitQ + IVF for ANN search on the Deep1M dataset.
 
 ### Dataset downloading and clustering
-Use the following commands in the shell to download the deep1M dataset, generate clustering information, and store it on disk.
+Use the following shell commands to download the Deep1M dataset, generate clustering information, and save it to disk.
 ```shell
 wget http://www.cse.cuhk.edu.hk/systems/hash/gqr/dataset/deep1M.tar.gz
 tar -zxvf deep1M.tar.gz
@@ -62,7 +62,7 @@ python python/ivf.py deep1M/deep1M_base.fvecs 4096 deep1M/deep1M_centroids_4096.
 ```
 
 ### Example Code in C++ for index construction
-The following codes show how to load deep1M's vector data, centroids information, and cluster ids from disk, build the IVF + RaBitQ index,  and finally save the index to disk.
+The following code demonstrates how to load Deep1M's vector data, centroids information, and cluster IDs from disk, build an IVF + RaBitQ index, and save the index back to disk.
 ```cpp
 #include <cstdint>
 #include <iostream>
@@ -133,14 +133,14 @@ int main(int argc, char** argv) {
     return 0;
 }
 ```
-After compilation (suppose it is compiled to an executable named `ivf_build`), run the following command to build the IVF:
+After compilation (suppose it is compiled to an executable named `ivf_build`), run the following command to build the IVF index:
 ```shell
 ./ivf_build deep1M/deep1M_base.fvecs deep1M/deep1M_centroids_4096.fvecs deep1M/deep1M_clusterids_4096.ivecs 4 deep1M/deep1M_rabitqlib_ivf_4.index true
 ```
-This will build an IVF that uses 4 (1+3) bits to quantize each vector for the deep1M dataset through RaBitQ.
+This builds an IVF index for the Deep1M dataset using RaBitQ with 4 (1+3) bits to quantize each vector.
 
 ### Example Code in C++ for querying
-After building the index, you can execute queries on it. The following codes show how to load ivf index and query from disk, execute queries, and compare the results to the groundtruth.
+After building the index, you can execute queries on it. The following code shows how to load the IVF index and queries from disk, execute the queries, and compare results against the ground truth.
 
 ```c++
 #include <iostream>
@@ -309,25 +309,25 @@ static std::vector<size_t> get_nprobes(
     return nprobes;
 }
 ```
-To execute queries on deep1M, run the following command for the compiled codes (suppose that it is named `ivf_query`):
+To execute queries on the Deep1M dataset, run the following command for the compiled codes (suppose that it is named `ivf_query`):
 ```shell
 ./ivf_query deep1M/deep1M_rabitqlib_ivf_4.index deep1M/deep1M_query.fvecs deep1M/deep1M_groundtruth.ivecs
 ```
 
 
 ## RaBitQ + HNSW
-[HNSW](https://arxiv.org/abs/1603.09320) is a popular graph-based index. HNSW + RaBitQ consumes the more memory than IVF + RaBitQ because it needs to store the edges of every vertex in a graph (e.g., 32 edges = 1,024 bits). In terms of the time-accuracy trade-off, HNSW + RaBitQ and IVF + RaBitQ perform differently across datasets—sometimes the former works better, and sometimes the latter does.
-RaBitQ + HNSW receives raw data vectors as inputs. It first conducts KMeans using a Python script. The centroid vectors will be used in the normalization of data vectors for improving accuracy. 
+[HNSW](https://arxiv.org/abs/1603.09320) is a popular graph-based index. Compared to IVF + RaBitQ, HNSW + RaBitQ consumes more memory due to the need to store edges of every vertex in a graph (e.g., 32 edges = 1,024 bits). In terms of time-accuracy trade-off, HNSW + RaBitQ and IVF + RaBitQ perform differently across datasets—each may outperform the other depending on the scenario.
+RaBitQ + HNSW takes raw data vectors as input. It begins with KMeans clustering (via a Python script), and the resulting centroids are used to normalize the data vectors for improved accuracy.
 
 #### Perform Clustering using Faiss
-First, conduct [Kmeans clustering](https://github.com/VectorDB-NTU/RaBitQ-Library/blob/main/python/ivf.py) on raw data vectors to get centroid vectors. We recommend 16 centroids(clusters). This will save two files: centroids file and cluster ids file.
-Use the following command to conduct KMeans clustering on deep1M dataset.
+First, run [Kmeans clustering](https://github.com/VectorDB-NTU/RaBitQ-Library/blob/main/python/ivf.py) on raw data vectors to get centroid vectors. We recommend using 16 centroids (clusters). This will generate two output files: a centroids file and a cluster IDs file.
+Use the following command to perform KMeans clustering on the Deep1M dataset.
 ```shell
 python python/ivf.py deep1M/deep1M_base.fvecs 16 deep1M/deep1M_centroids_16.fvecs deep1M/deep1M_clusterids_16.ivecs l2
 ```
 
 #### Example Code in C++ for index construction
-Second, load raw data, centroids, and cluster ids files to build the index. Index file is then saved.
+Second, load raw data, centroids, and cluster IDs files to build the index. Index file is then saved.
 
 ```cpp
 #include <cstdint>
@@ -430,15 +430,15 @@ int main(int argc, char* argv[]) {
 }
 
 ```
-After compilation (get an excutable named `hnsw_build`), run the following command to build the HNSW.
+After compilation (resulting in an executable named `hnsw_build`), run the following command to build the HNSW index.
 ```shell
 ./hnsw_build deep1M/deep1M_base.fvecs deep1M/deep1M_centroids_16.fvecs deep1M/deep1M_clusterids_16.ivecs 16 100 5 deep1M/deep1M_c16_b5.index l2 true
 ```
-This will build a HNSW that uses 5(1+4) bits to quantize each vector.
+This will build an HNSW index that uses 5 (1+4) bits to quantize each vector.
 
 #### Example Code in C++ for querying
-Third, load index, query and groundtruth files to test ANN Search.
- 
+Third, load the index, queries and ground truth files to evaluate ANN search performance.
+
 ```cpp
 #include <iostream>
 #include <vector>
@@ -556,13 +556,13 @@ int main(int argc, char* argv[]) {
     }
 }
 ```
-To execute queries on deep1M, run the command for the executable(named `hnsw_query`) after compilation.
+To execute queries on the Deep1M dataset, run the following command for the executable (named `hnsw_query`) after compilation.
 ```shell
 ./hnsw_query deep1M/deep1M_c16_b5.index deep1M/deep1M_query.fvecs deep1M/deep1M_groundtruth.ivecs l2
 ```
 
 ## RaBitQ + QG ([SymphonyQG](https://dl.acm.org/doi/10.1145/3709730))
-[QG](https://medium.com/@masajiro.iwasaki/fusion-of-graph-based-indexing-and-product-quantization-for-ann-search-7d1f0336d0d0) is a graph-based index originated from the [NGT library](https://github.com/yahoojapan/NGT). Different from HNSW, it creates multiple quantization codes for every vector and carefully re-organizes their layout to minimize random memory accesses in querying. RaBitQ + QG in developped from our research project [SymphonyQG](https://dl.acm.org/doi/10.1145/3709730). Unlike IVF + RaBitQ and HNSW + RaBitQ, which consumes less memory than the raw datasets, RaBitQ + QG consumes more memory to pursue the best time-accuracy trade-off.
+[QG](https://medium.com/@masajiro.iwasaki/fusion-of-graph-based-indexing-and-product-quantization-for-ann-search-7d1f0336d0d0) is a graph-based index originating from the [NGT library](https://github.com/yahoojapan/NGT). Unlike HNSW, it generates multiple quantization codes per vector and carefully re-organizes their layout to minimize random memory accesses during querying. RaBitQ + QG is developed from our research project [SymphonyQG](https://dl.acm.org/doi/10.1145/3709730). In contrast to IVF + RaBitQ and HNSW + RaBitQ, which consumes less memory than the raw datasets, RaBitQ + QG consumes more memory to achieve the best time-accuracy trade-off.
 
 
 #### Example Code in C++
