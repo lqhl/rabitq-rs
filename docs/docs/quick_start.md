@@ -320,7 +320,7 @@ To execute queries on deep1M, run the following command for the compiled codes (
 RaBitQ + HNSW receives raw data vectors as inputs. It first conducts KMeans using a Python script. The centroid vectors will be used in the normalization of data vectors for improving accuracy. 
 
 #### Perform Clustering using Faiss
-First, conduct [Kmeans clustering](https://github.com/VectorDB-NTU/RaBitQLib_private/blob/main/python/ivf.py) on raw data vectors to get centroid vectors. We recommend 16 centroids(clusters). This will produce two files: centroids file and cluster ids file.
+First, conduct [Kmeans clustering](https://github.com/VectorDB-NTU/RaBitQ-Library/blob/main/python/ivf.py) on raw data vectors to get centroid vectors. We recommend 16 centroids(clusters). This will produce two files: centroids file and cluster ids file.
 
 #### Example Code in C++ for index construction
 Second, load raw data, centroids, and cluster ids files to build the index. Index file is then saved.
