@@ -101,6 +101,8 @@ class IVF {
     void search(const float*, size_t, size_t, PID*, bool) const;
 
     [[nodiscard]] size_t padded_dim() const { return this->padded_dim_; }
+
+    [[nodiscard]] size_t num_clusters() const { return this->num_cluster_; }
 };
 
 inline IVF::IVF(size_t n, size_t dim, size_t cluster_num, size_t bits, RotatorType type)
@@ -374,6 +376,9 @@ inline void IVF::search(
     PID* __restrict__ results,
     bool use_hacc = true
 ) const {
+    if (nprobe > num_cluster_) {
+        nprobe = num_cluster_;
+    }
     std::vector<float> rotated_query(padded_dim_);
     this->rotator_->rotate(query, rotated_query.data());
 

@@ -86,6 +86,10 @@ int main(int argc, char** argv) {
     for (size_t r = 0; r < test_round; r++) {
         for (size_t l = 0; l < length; ++l) {
             size_t nprobe = nprobes[l];
+            if (nprobe > ivf.num_clusters()) {
+                std::cout << "nprobe " << nprobe << " is larger than number of clusters, ";
+                std::cout << "will use nprobe = num_cluster (" << ivf.num_clusters() << ").\n";
+            }
             size_t total_correct = 0;
             float total_time = 0;
             std::vector<PID> results(topk);
