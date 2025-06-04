@@ -1,6 +1,6 @@
 # The RaBitQ Library
 
-The RaBitQ Library provides efficient and lightweight implementations of the RaBitQ quantization algorithm ([1-bit version](https://arxiv.org/abs/2405.12497) and [multi-bit version](https://arxiv.org/abs/2409.09913)) and its applications in high-dimensional vector search. The core algorithm RaBitQ is based on the research from [VectorDB group](https://vectordb-ntu.github.io/) at Nanyang Technological University, Singapore. 
+The RaBitQ Library provides efficient and lightweight implementations of the RaBitQ quantization algorithm ([1-bit version](https://arxiv.org/abs/2405.12497) and [multi-bit version](https://arxiv.org/abs/2409.09913)) and its applications in high-dimensional vector search. The core algorithm RaBitQ is based on the research from [VectorDB group](https://vectordb-ntu.github.io/) at Nanyang Technological University, Singapore. The library is developped by Yutong Gou, Jianyang Gao, Yuexuan Xu, Jifan Shi and Zhonghao Yang. 
 
 The library provides the following key features:
 
@@ -48,5 +48,7 @@ We acknowledge Alexandr Guzhva, Li Liu, Chao Gao, Silu Huang, Jiabao Jin, Xiaoya
 Please provide a reference of our paper if it helps in your systems or research projects.
 
 <pre style="white-space: pre-wrap; word-break: break-word; font-family: monospace; background: #f5f5f5; padding: 1em; border-radius: 5px; font-size: 0.85em;">
-Jianyang Gao, Yutong Gou, Yuexuan Xu, Yongyi Yang, Cheng Long, Raymond Chi-Wing Wong, "Practical and Asymptotically Optimal Quantization of High-Dimensional Vectors in Euclidean Space for Approximate Nearest Neighbor Search", SIGMOD 2025, available at https://arxiv.org/abs/2409.09913
+Jianyang Gao, Yutong Gou, Yuexuan Xu, Yongyi Yang, Cheng Long, Raymond Chi-Wing Wong, 
+"Practical and Asymptotically Optimal Quantization of High-Dimensional Vectors in Euclidean Space for Approximate Nearest Neighbor Search", 
+SIGMOD 2025, available at https://arxiv.org/abs/2409.09913
 </pre>
