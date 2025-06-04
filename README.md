@@ -1,6 +1,8 @@
 # The RaBitQ Library
 
-The RaBitQ Library provides efficient and lightweight implementations of the RaBitQ quantization algorithm ([1-bit version](https://arxiv.org/abs/2405.12497) and [multi-bit version](https://arxiv.org/abs/2409.09913)) and its applications in high-dimensional vector search. The core algorithm RaBitQ is based on the research from [VectorDB group](https://vectordb-ntu.github.io/) at Nanyang Technological University, Singapore. The library is developped by Yutong Gou, Jianyang Gao, Yuexuan Xu, Jifan Shi and Zhonghao Yang. 
+The RaBitQ Library provides efficient and lightweight implementations of the RaBitQ quantization algorithm ([1-bit version](https://arxiv.org/abs/2405.12497) and [multi-bit version](https://arxiv.org/abs/2409.09913)) and its applications in high-dimensional vector search. The core algorithm RaBitQ is based on the research from [VectorDB group](https://vectordb-ntu.github.io/) at Nanyang Technological University, Singapore. 
+
+The library is developped by Yutong Gou, Jianyang Gao, Yuexuan Xu, Jifan Shi and Zhonghao Yang. 
 
 The library provides the following key features:
 
