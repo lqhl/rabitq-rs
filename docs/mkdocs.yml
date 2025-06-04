@@ -1,0 +1,33 @@
+site_name: RaBitQ Library
+
+nav:
+  - Introduction: index.md
+  - Quick Start: quick_start.md
+  - RaBitQ:
+    - Introduction: rabitq/rabitq.md
+    - Rotator: rabitq/rotator.md
+    - Quantizer: rabitq/quantizer.md
+    - Estimator: rabitq/estimator.md
+    - Reranking: rabitq/reranking.md
+    - Kernel:
+      - Compact Code Storage: compact_code.md
+      - Inner Product: kernel_ip.md
+  - RaBitQ for Vector Search:
+    - IVF + RaBitQ: index/ivf.md
+    - HNSW + RaBitQ: index/hnsw.md
+    - QG + RaBitQ (SymphonyQG): index/qg.md
+
+
+markdown_extensions:
+  - pymdownx.arithmatex
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - attr_list
+  - footnotes
+
+extra_javascript:
+  - https://cdn.jsdelivr.net/npm/mathjax@2/MathJax.js?config=TeX-AMS-MML_HTMLorMML
+
+theme: 
+  name: material
