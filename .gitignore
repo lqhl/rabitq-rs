@@ -30,3 +30,12 @@
 *.exe
 *.out
 *.app
+
+
+.cache/
+bin/
+build/
+data/
+
+*.pyc
+.clang-*
