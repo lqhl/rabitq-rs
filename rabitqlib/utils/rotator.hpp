@@ -244,15 +244,19 @@ class FhtKacRotator : public Rotator<float> {
             fht_float_(rotated_vec);
             vec_rescale(rotated_vec, trunc_dim_, fac_);
 
-            flip_sign(flip_.data(), rotated_vec, padded_dim_);
+            flip_sign(flip_.data() + (padded_dim_ / kByteLen), rotated_vec, padded_dim_);
             fht_float_(rotated_vec);
             vec_rescale(rotated_vec, trunc_dim_, fac_);
 
-            flip_sign(flip_.data(), rotated_vec, padded_dim_);
+            flip_sign(
+                flip_.data() + (2 * padded_dim_ / kByteLen), rotated_vec, padded_dim_
+            );
             fht_float_(rotated_vec);
             vec_rescale(rotated_vec, trunc_dim_, fac_);
 
-            flip_sign(flip_.data(), rotated_vec, padded_dim_);
+            flip_sign(
+                flip_.data() + (3 * padded_dim_ / kByteLen), rotated_vec, padded_dim_
+            );
             fht_float_(rotated_vec);
             vec_rescale(rotated_vec, trunc_dim_, fac_);
 
