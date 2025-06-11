@@ -3,6 +3,7 @@
 #include <immintrin.h>
 #include <omp.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -118,9 +119,7 @@ inline IVF::IVF(size_t n, size_t dim, size_t cluster_num, size_t bits, RotatorTy
         std::cerr.flush();
         exit(1);
     };
-    rotator_ = choose_rotator<float>(
-        dim, RotatorType::FhtKacRotator, round_up_to_multiple(dim_, 64)
-    );
+    rotator_ = choose_rotator<float>(dim, type, round_up_to_multiple(dim_, 64));
     padded_dim_ = rotator_->size();
     /* check size */
     assert(padded_dim_ % 64 == 0);
@@ -332,9 +331,7 @@ inline void IVF::load(const char* filename) {
     input.read(reinterpret_cast<char*>(&this->ex_bits_), sizeof(size_t));
     input.read(reinterpret_cast<char*>(&type_), sizeof(type_));
 
-    rotator_ = choose_rotator<float>(
-        dim_, RotatorType::FhtKacRotator, round_up_to_multiple(dim_, 64)
-    );
+    rotator_ = choose_rotator<float>(dim_, type_, round_up_to_multiple(dim_, 64));
     padded_dim_ = rotator_->size();
 
     /* Load number of vectors of each cluster */
@@ -376,11 +373,11 @@ inline void IVF::search(
     PID* __restrict__ results,
     bool use_hacc = true
 ) const {
-    if (nprobe > num_cluster_) {
-        nprobe = num_cluster_;
-    }
+    nprobe = std::min(nprobe, num_cluster_);  // corner case
     std::vector<float> rotated_query(padded_dim_);
     this->rotator_->rotate(query, rotated_query.data());
+
+    std::cout << l2norm_sqr(query, dim_) << '\t' << l2norm_sqr(rotated_query.data(), padded_dim_) << '\n';
 
     // use initer to get closest nprobe centroids
     std::vector<AnnCandidate<float>> centroid_dist(nprobe);

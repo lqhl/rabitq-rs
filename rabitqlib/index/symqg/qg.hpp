@@ -341,9 +341,7 @@ template <typename T>
 inline void QuantizedGraph<T>::initialize() {
     ::delete rotator_;
 
-    rotator_ = choose_rotator<float>(
-        dim_, RotatorType::FhtKacRotator, round_up_to_multiple(dim_, 64)
-    );
+    rotator_ = choose_rotator<float>(dim_, type_, round_up_to_multiple(dim_, 64));
     padded_dim_ = rotator_->size();
 
     /* check size */
