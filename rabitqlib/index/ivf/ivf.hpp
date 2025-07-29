@@ -41,8 +41,14 @@ class IVF {
     std::vector<Cluster> cluster_lst_;   // List of clusters in ivf
     float (*ip_func_)(const float*, const uint8_t*, size_t) = nullptr;
 
-    void
-    quantize_cluster(Cluster&, const std::vector<PID>&, const float*, const float*, float*, const quant::RabitqConfig&);
+    void quantize_cluster(
+        Cluster&,
+        const std::vector<PID>&,
+        const float*,
+        const float*,
+        float*,
+        const quant::RabitqConfig&
+    );
 
     [[nodiscard]] size_t ids_bytes() const { return sizeof(PID) * num_; }
 
@@ -377,8 +383,6 @@ inline void IVF::search(
     std::vector<float> rotated_query(padded_dim_);
     this->rotator_->rotate(query, rotated_query.data());
 
-    std::cout << l2norm_sqr(query, dim_) << '\t' << l2norm_sqr(rotated_query.data(), padded_dim_) << '\n';
-
     // use initer to get closest nprobe centroids
     std::vector<AnnCandidate<float>> centroid_dist(nprobe);
     this->initer_->centroids_distances(rotated_query.data(), nprobe, centroid_dist);
@@ -455,18 +459,20 @@ inline void IVF::scan_one_batch(
         use_hacc
     );
 
+    float distk = knns.top_dist();
+
     // if only use 1-bit code, directly return
     if (ex_bits_ == 0) {
         for (size_t i = 0; i < num_points; ++i) {
             PID id = ids[i];
             float ex_dist = est_distance[i];
             knns.insert(id, ex_dist);
+            distk = knns.top_dist();
         }
         return;
     }
 
     // incremental distance computation - V2
-    float distk = knns.top_dist();
     for (size_t i = 0; i < num_points; ++i) {
         float lower_dist = low_distance[i];
         if (lower_dist < distk) {
