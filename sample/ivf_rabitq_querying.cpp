@@ -162,6 +162,7 @@ static std::vector<size_t> get_nprobes(
         if (recall > 0.997 || recall - old_recall < 1e-5) {
             break;
         }
+        std::cout << recall << '\t' << nprobe << std::endl << std::flush;
         old_recall = recall;
     }
 
