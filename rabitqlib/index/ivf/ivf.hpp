@@ -39,6 +39,7 @@ class IVF {
     RotatorType type_;                   // type of rotator
     Rotator<float>* rotator_ = nullptr;  // Data Rotator
     std::vector<Cluster> cluster_lst_;   // List of clusters in ivf
+    MetricType metric_type_ = rabitqlib::METRIC_L2; // metric type
     float (*ip_func_)(const float*, const uint8_t*, size_t) = nullptr;
 
     void quantize_cluster(
@@ -94,7 +95,7 @@ class IVF {
    public:
     explicit IVF() {}
     explicit IVF(
-        size_t, size_t, size_t, size_t, RotatorType type = RotatorType::FhtKacRotator
+        size_t, size_t, size_t, size_t, RotatorType type = RotatorType::FhtKacRotator, MetricType metric_type = rabitqlib::METRIC_L2
     );
 
     ~IVF();
@@ -112,13 +113,14 @@ class IVF {
     [[nodiscard]] size_t num_clusters() const { return this->num_cluster_; }
 };
 
-inline IVF::IVF(size_t n, size_t dim, size_t cluster_num, size_t bits, RotatorType type)
+inline IVF::IVF(size_t n, size_t dim, size_t cluster_num, size_t bits, RotatorType type, MetricType metric_type)
     : num_(n)
     , dim_(dim)
     , padded_dim_(dim)
     , num_cluster_(cluster_num)
     , ex_bits_(bits - 1)
-    , type_(type) {
+    , type_(type)
+    , metric_type_(metric_type) {
     if (bits < 1 || bits > 9) {
         std::cerr << "Invalid number of bits for quantization in IVF::IVF\n";
         std::cerr << "Expected: 1 to 9  Input:" << bits << '\n';
@@ -272,7 +274,7 @@ inline void IVF::quantize_cluster(
             ex_bits_,
             batch_data,
             ex_data,
-            METRIC_L2,
+            metric_type_,
             config
         );
 
@@ -295,6 +297,7 @@ inline void IVF::save(const char* filename) const {
     output.write(reinterpret_cast<const char*>(&num_cluster_), sizeof(size_t));
     output.write(reinterpret_cast<const char*>(&ex_bits_), sizeof(size_t));
     output.write(reinterpret_cast<const char*>(&type_), sizeof(type_));
+    output.write(reinterpret_cast<const char*>(&metric_type_) ,sizeof(metric_type_));
 
     /* Save number of vectors of each cluster */
     std::vector<size_t> cluster_sizes;
@@ -336,6 +339,7 @@ inline void IVF::load(const char* filename) {
     input.read(reinterpret_cast<char*>(&this->num_cluster_), sizeof(size_t));
     input.read(reinterpret_cast<char*>(&this->ex_bits_), sizeof(size_t));
     input.read(reinterpret_cast<char*>(&type_), sizeof(type_));
+    input.read(reinterpret_cast<char*>(&metric_type_), sizeof(metric_type_));
 
     rotator_ = choose_rotator<float>(dim_, type_, round_up_to_multiple(dim_, 64));
     padded_dim_ = rotator_->size();
@@ -390,7 +394,7 @@ inline void IVF::search(
     buffer::SearchBuffer knns(k);
 
     SplitBatchQuery<float> q_obj(
-        rotated_query.data(), padded_dim_, ex_bits_, METRIC_L2, use_hacc
+        rotated_query.data(), padded_dim_, ex_bits_, metric_type_, use_hacc
     );
 
     for (size_t i = 0; i < nprobe; ++i) {
@@ -398,7 +402,17 @@ inline void IVF::search(
         float dist = centroid_dist[i].distance;
         const Cluster& cur_cluster = cluster_lst_[cid];
 
-        q_obj.set_g_add(dist);
+        if (metric_type_ == METRIC_L2){
+            q_obj.set_g_add(dist);
+        }else if (metric_type_ == METRIC_IP){
+            float g_add_ip = dot_product<float>( rotated_query.data(), initer_->centroid(cid) ,padded_dim_);
+            q_obj.set_g_add(dist, g_add_ip);
+        }else{
+            // unsupported
+            std::cerr << "Invalid quantize metric type, only support L2 and IP metric" << std::endl;
+            return;
+        }
+        // q_obj.set_g_add(dist);
         search_cluster(cur_cluster, q_obj, knns, use_hacc);
     }
 
