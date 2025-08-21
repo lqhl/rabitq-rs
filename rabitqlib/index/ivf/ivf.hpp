@@ -39,7 +39,7 @@ class IVF {
     RotatorType type_;                   // type of rotator
     Rotator<float>* rotator_ = nullptr;  // Data Rotator
     std::vector<Cluster> cluster_lst_;   // List of clusters in ivf
-    MetricType metric_type_ = rabitqlib::METRIC_L2; // metric type
+    MetricType metric_type_ = rabitqlib::METRIC_L2;  // metric type
     float (*ip_func_)(const float*, const uint8_t*, size_t) = nullptr;
 
     void quantize_cluster(
@@ -95,7 +95,12 @@ class IVF {
    public:
     explicit IVF() {}
     explicit IVF(
-        size_t, size_t, size_t, size_t, RotatorType type = RotatorType::FhtKacRotator, MetricType metric_type = rabitqlib::METRIC_L2
+        size_t,
+        size_t,
+        size_t,
+        size_t,
+        MetricType metric_type = rabitqlib::METRIC_L2,
+        RotatorType type = RotatorType::FhtKacRotator
     );
 
     ~IVF();
@@ -113,7 +118,14 @@ class IVF {
     [[nodiscard]] size_t num_clusters() const { return this->num_cluster_; }
 };
 
-inline IVF::IVF(size_t n, size_t dim, size_t cluster_num, size_t bits, RotatorType type, MetricType metric_type)
+inline IVF::IVF(
+    size_t n,
+    size_t dim,
+    size_t cluster_num,
+    size_t bits,
+    MetricType metric_type,
+    RotatorType type
+)
     : num_(n)
     , dim_(dim)
     , padded_dim_(dim)
@@ -297,7 +309,7 @@ inline void IVF::save(const char* filename) const {
     output.write(reinterpret_cast<const char*>(&num_cluster_), sizeof(size_t));
     output.write(reinterpret_cast<const char*>(&ex_bits_), sizeof(size_t));
     output.write(reinterpret_cast<const char*>(&type_), sizeof(type_));
-    output.write(reinterpret_cast<const char*>(&metric_type_) ,sizeof(metric_type_));
+    output.write(reinterpret_cast<const char*>(&metric_type_), sizeof(metric_type_));
 
     /* Save number of vectors of each cluster */
     std::vector<size_t> cluster_sizes;
@@ -402,14 +414,17 @@ inline void IVF::search(
         float dist = centroid_dist[i].distance;
         const Cluster& cur_cluster = cluster_lst_[cid];
 
-        if (metric_type_ == METRIC_L2){
+        if (metric_type_ == METRIC_L2) {
             q_obj.set_g_add(dist);
-        }else if (metric_type_ == METRIC_IP){
-            float g_add_ip = dot_product<float>( rotated_query.data(), initer_->centroid(cid) ,padded_dim_);
+        } else if (metric_type_ == METRIC_IP) {
+            auto g_add_ip = dot_product<float>(
+                rotated_query.data(), initer_->centroid(cid), padded_dim_
+            );
             q_obj.set_g_add(dist, g_add_ip);
-        }else{
+        } else {
             // unsupported
-            std::cerr << "Invalid quantize metric type, only support L2 and IP metric" << std::endl;
+            std::cerr << "Invalid quantize metric type, only support L2 and IP metric\n "
+                      << std::flush;
             return;
         }
         // q_obj.set_g_add(dist);

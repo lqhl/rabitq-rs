@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
     std::cout << "\tDIM: " << dim << '\n';
 
     rabitqlib::StopW stopw;
-    index_type ivf(num_points, dim, k, total_bits, rabitqlib::RotatorType::FhtKacRotator, metric_type);
+    index_type ivf(num_points, dim, k, total_bits, metric_type);
     ivf.construct(data.data(), centroids.data(), cids.data(), faster_quant);
     float miniutes = stopw.get_elapsed_mili() / 1000 / 60;
     std::cout << "ivf constructed \n";
