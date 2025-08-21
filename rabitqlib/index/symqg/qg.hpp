@@ -34,12 +34,14 @@ class QuantizedGraph {
     friend class QGBuilder;
 
    private:
-    size_t num_points_ = 0;    // num points
-    size_t degree_bound_ = 0;  // degree bound
-    size_t dim_ = 0;           // dimension
-    size_t padded_dim_ = 0;    // padded dimension
-    PID entry_point_ = 0;      // Entry point of graph
-    RotatorType type_ = RotatorType::FhtKacRotator;
+    size_t num_points_ = 0;                           // num points
+    size_t degree_bound_ = 0;                         // degree bound
+    size_t dim_ = 0;                                  // dimension
+    size_t padded_dim_ = 0;                           // padded dimension
+    T (*raw_dist_func_)(const T*, const T*, size_t);  // dist func for raw vector
+    PID entry_point_ = 0;                             // Entry point of graph
+    MetricType metric_type_ = MetricType::METRIC_L2;
+    RotatorType rotator_type_ = RotatorType::FhtKacRotator;
 
     Array<
         char,
@@ -81,7 +83,8 @@ class QuantizedGraph {
     }
 
     [[nodiscard]] PID* get_neighbors(PID data_id) {
-        return reinterpret_cast<PID*>(&data_.at((row_offset_ * data_id) + neighbor_offset_)
+        return reinterpret_cast<PID*>(
+            &data_.at((row_offset_ * data_id) + neighbor_offset_)
         );
     }
 
@@ -91,9 +94,13 @@ class QuantizedGraph {
         );
     }
 
-    void
-    find_candidates(PID, size_t, std::vector<AnnCandidate<T>>&, HashBasedBooleanSet&, const std::vector<uint32_t>&)
-        const;
+    void find_candidates(
+        PID,
+        size_t,
+        std::vector<AnnCandidate<T>>&,
+        HashBasedBooleanSet&,
+        const std::vector<uint32_t>&
+    ) const;
 
     void update_qg(PID, const std::vector<AnnCandidate<T>>&);
 
@@ -113,7 +120,8 @@ class QuantizedGraph {
         size_t num,
         size_t dim,
         size_t max_deg,
-        RotatorType type = RotatorType::FhtKacRotator
+        MetricType metric_type = METRIC_L2,
+        RotatorType rotator_type = RotatorType::FhtKacRotator
     );
 
     explicit QuantizedGraph() = default;
@@ -142,11 +150,15 @@ class QuantizedGraph {
 
 template <typename T>
 inline QuantizedGraph<T>::QuantizedGraph(
-    size_t num, size_t dim, size_t max_deg, RotatorType type
+    size_t num, size_t dim, size_t max_deg, MetricType metric_type, RotatorType rotator_type
 )
-    : num_points_(num), degree_bound_(max_deg), dim_(dim), padded_dim_(dim), type_(type) {
-    // choose rotator
-
+    : num_points_(num)
+    , degree_bound_(max_deg)
+    , dim_(dim)
+    , padded_dim_(dim)
+    , raw_dist_func_((metric_type == METRIC_IP) ? dot_product_dis<T> : euclidean_sqr<T>)
+    , metric_type_(metric_type)
+    , rotator_type_(rotator_type) {
     initialize();
 }
 
@@ -178,7 +190,8 @@ inline void QuantizedGraph<T>::save(const char* filename) const {
     output.write(reinterpret_cast<const char*>(&dim_), sizeof(size_t));
     output.write(reinterpret_cast<const char*>(&padded_dim_), sizeof(size_t));
     output.write(reinterpret_cast<const char*>(&entry_point_), sizeof(PID));
-    output.write(reinterpret_cast<const char*>(&type_), sizeof(RotatorType));
+    output.write(reinterpret_cast<const char*>(&rotator_type_), sizeof(RotatorType));
+    output.write(reinterpret_cast<const char*>(&metric_type_), sizeof(MetricType));
 
     /* Data */
     data_.save(output);
@@ -209,7 +222,10 @@ inline void QuantizedGraph<T>::load(const char* filename) {
     input.read(reinterpret_cast<char*>(&dim_), sizeof(size_t));
     input.read(reinterpret_cast<char*>(&padded_dim_), sizeof(size_t));
     input.read(reinterpret_cast<char*>(&entry_point_), sizeof(PID));
-    input.read(reinterpret_cast<char*>(&type_), sizeof(RotatorType));
+    input.read(reinterpret_cast<char*>(&rotator_type_), sizeof(RotatorType));
+    input.read(reinterpret_cast<char*>(&metric_type_), sizeof(MetricType));
+
+    raw_dist_func_ = (metric_type_ == METRIC_IP) ? dot_product_dis<T> : euclidean_sqr<T>;
 
     initialize();
 
@@ -265,7 +281,7 @@ inline void QuantizedGraph<T>::search(
         }
         vis->set(cur_node);
 
-        q_obj.set_g_add(euclidean_sqr(query, get_vector(cur_node), dim_));
+        q_obj.set_g_add(raw_dist_func_(query, get_vector(cur_node), dim_));
 
         scan_neighbors(
             q_obj, cur_node, est_dist.data(), search_pool, *vis, this->degree_bound_
@@ -326,7 +342,7 @@ inline void QuantizedGraph<T>::update_results(
             if (!vis.get(cur_neighbor)) {
                 vis.set(cur_neighbor);
                 result_pool.insert(
-                    cur_neighbor, euclidean_sqr(query, get_vector(cur_neighbor), dim_)
+                    cur_neighbor, raw_dist_func_(query, get_vector(cur_neighbor), dim_)
                 );
             }
         }
@@ -341,7 +357,7 @@ template <typename T>
 inline void QuantizedGraph<T>::initialize() {
     ::delete rotator_;
 
-    rotator_ = choose_rotator<float>(dim_, type_, round_up_to_multiple(dim_, 64));
+    rotator_ = choose_rotator<float>(dim_, rotator_type_, round_up_to_multiple(dim_, 64));
     padded_dim_ = rotator_->size();
 
     /* check size */
@@ -393,7 +409,7 @@ inline void QuantizedGraph<T>::find_candidates(
         }
         vis.set(cur_candi);
         auto cur_degree = degrees[cur_candi];
-        q_obj.set_g_add(euclidean_sqr(query, get_vector(cur_candi), dim_));
+        q_obj.set_g_add(raw_dist_func_(query, get_vector(cur_candi), dim_));
         scan_neighbors(q_obj, cur_candi, est_dist.data(), tmp_pool, vis, cur_degree);
         if (cur_candi != cur_id) {
             results.emplace_back(cur_candi, q_obj.g_add());
@@ -435,7 +451,8 @@ inline void QuantizedGraph<T>::update_qg(
             rotated_centroid.data(),
             std::min(cur_degree - i, fastscan::kBatchSize),
             padded_dim_,
-            batch_data
+            batch_data,
+            metric_type_
         );
 
         data += fastscan::kBatchSize * padded_dim_;

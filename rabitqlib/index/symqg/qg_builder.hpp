@@ -12,6 +12,7 @@
 #include "defines.hpp"
 #include "index/symqg/qg.hpp"
 #include "utils/hashset.hpp"
+#include "utils/space.hpp"
 #include "utils/tools.hpp"
 
 namespace rabitqlib::symqg {
@@ -34,9 +35,8 @@ class QGBuilder {
     static constexpr size_t kMaxCandidatePoolSize =
         750;  // max num of candidates for indexing
     static constexpr size_t kMaxPrunedSize =
-        300;  // max number of recorded pruned candidates
-    float (*dist_func_)(const float*, const float*, size_t);
-    std::vector<CandidateList> new_neighbors_;       // new neighbors for current iteration
+        300;                                    // max number of recorded pruned candidates
+    std::vector<CandidateList> new_neighbors_;  // new neighbors for current iteration
     std::vector<CandidateList> pruned_neighbors_;    // recorded pruned neighbors
     std::vector<HashBasedBooleanSet> visited_list_;  // list of visited hash set
     std::vector<uint32_t> degrees_;                  // record degree of qg
@@ -63,7 +63,6 @@ class QGBuilder {
         , num_nodes_{qg_.num_vertices()}
         , dim_{qg_.dimension()}
         , degree_bound_(qg_.degree_bound())
-        , dist_func_{euclidean_sqr<float>}
         , new_neighbors_(qg_.num_vertices())
         , pruned_neighbors_(qg_.num_vertices())
         , visited_list_(
@@ -76,8 +75,9 @@ class QGBuilder {
         std::vector<float> centroid =
             compute_centroid(data, num_nodes_, dim_, num_threads_);
 
-        PID entry_point =
-            exact_nn(data, centroid.data(), num_nodes_, dim_, num_threads_, dist_func_);
+        PID entry_point = exact_nn(
+            data, centroid.data(), num_nodes_, dim_, num_threads_, euclidean_sqr<float>
+        );
 
         std::cout << "Setting entry_point to " << entry_point << '\n' << std::flush;
 
@@ -152,7 +152,7 @@ inline void QGBuilder::add_pruned_edges(
             if (dij_sqr > dik_sqr) {
                 break;
             }
-            float djk_sqr = dist_func_(qg_.get_vector(nei.id), cur_data, dim_);
+            float djk_sqr = qg_.raw_dist_func_(qg_.get_vector(nei.id), cur_data, dim_);
             float cosine =
                 (dik_sqr + dij_sqr - djk_sqr) / (2 * std::sqrt(dij_sqr * dik_sqr));
             if (cosine > threshold) {
@@ -211,7 +211,7 @@ inline void QGBuilder::heuristic_prune(
                 continue;
             }
             float dik = pool[k].distance;
-            auto djk = dist_func_(data_j, qg_.get_vector(pool[k].id), dim_);
+            auto djk = qg_.raw_dist_func_(data_j, qg_.get_vector(pool[k].id), dim_);
 
             if (djk < dik) {
                 if (refine && pruned_neighbors_[cur_id].size() < kMaxPrunedSize) {
@@ -323,7 +323,7 @@ inline void QGBuilder::random_init() {
         new_neighbors_[i].reserve(degree_bound_);
         for (PID cur_neigh : neighbor_set) {
             new_neighbors_[i].emplace_back(
-                cur_neigh, dist_func_(cur_data, qg_.get_vector(cur_neigh), dim_)
+                cur_neigh, qg_.raw_dist_func_(cur_data, qg_.get_vector(cur_neigh), dim_)
             );
         }
 
@@ -385,7 +385,7 @@ inline void QGBuilder::graph_refine() {
                 if (rand_id != static_cast<PID>(i) && ids.find(rand_id) == ids.end()) {
                     new_result.emplace_back(
                         rand_id,
-                        dist_func_(qg_.get_vector(rand_id), qg_.get_vector(i), dim_)
+                        qg_.raw_dist_func_(qg_.get_vector(rand_id), qg_.get_vector(i), dim_)
                     );
                     ids.emplace(rand_id);
                 }

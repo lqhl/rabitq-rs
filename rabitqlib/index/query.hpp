@@ -5,6 +5,7 @@
 #include <numeric>
 #include <utility>
 
+#include "defines.hpp"
 #include "index/lut.hpp"
 #include "quantization/rabitq.hpp"
 #include "utils/space.hpp"
@@ -40,9 +41,11 @@ class BatchQuery {
 
     [[nodiscard]] T g_add() const { return G_add_; }
 
-    void set_g_add(T sqr_norm) {
-        G_add_ = sqr_norm;
-    }  // may need to be edited if we want to support ip
+    void set_g_add(T dist) {
+        // For L2, dist is the compute by euclidean_sqr()
+        // For IP, dist is computed by dot_product_dist() i.e., 1 - dot_product()
+        G_add_ = dist;
+    }
 
     [[nodiscard]] const uint8_t* lut() const { return lookup_table_.lut(); }
 };
