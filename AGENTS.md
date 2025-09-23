@@ -20,3 +20,4 @@
 - [x] Address any issues uncovered during the dataset-backed test, including implementing missing functionality and adding regression tests.
 - [x] Refresh the project documentation by archiving the existing `README.md` to `README.origin.md` and authoring a new README that explains usage and testing.
 - [x] Run `cargo fmt`, `cargo clippy`, and `cargo test` after code changes, ensuring the repository is clean.
+- [x] Extend the `gist` CLI with an in-crate training mode (`--nlist`) and document how to evaluate the dataset without precomputed centroids.

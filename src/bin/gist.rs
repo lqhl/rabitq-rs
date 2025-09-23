@@ -57,53 +57,68 @@ fn run(config: Config) -> CliResult<()> {
 
     println!("Loaded {} base vectors with dimension {}.", base.len(), dim);
 
-    println!("Loading centroids from {}...", config.centroids.display());
-    let centroids = read_fvecs(&config.centroids, None)?;
-    if centroids.is_empty() {
-        return Err(Box::new(IoError::new(
-            IoErrorKind::InvalidInput,
-            "no centroids were loaded",
-        )));
-    }
-    if centroids.iter().any(|c| c.len() != dim) {
-        return Err(Box::new(IoError::new(
-            IoErrorKind::InvalidInput,
-            "centroid dimensionality does not match the base dataset",
-        )));
-    }
-
-    println!(
-        "Loading cluster assignments from {}...",
-        config.assignments.display()
-    );
-    let assignments = read_ids(&config.assignments, config.max_base)?;
-    if assignments.len() != base.len() {
-        return Err(Box::new(IoError::new(
-            IoErrorKind::InvalidInput,
-            format!(
-                "cluster assignment count ({}) does not match number of base vectors ({})",
-                assignments.len(),
-                base.len()
-            ),
-        )));
-    }
-
     let build_start = Instant::now();
-    let index = IvfRabitqIndex::train_with_clusters(
-        &base,
-        &centroids,
-        &assignments,
-        config.bits,
-        config.metric,
-        config.seed,
-    )?;
+    let (index, clusters) = if let (Some(centroids_path), Some(assignments_path)) =
+        (&config.centroids, &config.assignments)
+    {
+        println!("Loading centroids from {}...", centroids_path.display());
+        let centroids = read_fvecs(centroids_path, None)?;
+        if centroids.is_empty() {
+            return Err(Box::new(IoError::new(
+                IoErrorKind::InvalidInput,
+                "no centroids were loaded",
+            )));
+        }
+        if centroids.iter().any(|c| c.len() != dim) {
+            return Err(Box::new(IoError::new(
+                IoErrorKind::InvalidInput,
+                "centroid dimensionality does not match the base dataset",
+            )));
+        }
+
+        println!(
+            "Loading cluster assignments from {}...",
+            assignments_path.display()
+        );
+        let assignments = read_ids(assignments_path, config.max_base)?;
+        if assignments.len() != base.len() {
+            return Err(Box::new(IoError::new(
+                IoErrorKind::InvalidInput,
+                format!(
+                    "cluster assignment count ({}) does not match number of base vectors ({})",
+                    assignments.len(),
+                    base.len()
+                ),
+            )));
+        }
+
+        let index = IvfRabitqIndex::train_with_clusters(
+            &base,
+            &centroids,
+            &assignments,
+            config.bits,
+            config.metric,
+            config.seed,
+        )?;
+        (index, centroids.len())
+    } else {
+        let nlist = config
+            .nlist
+            .ok_or_else(|| IoError::new(IoErrorKind::InvalidInput, "missing nlist"))?;
+        println!(
+            "Clustering base vectors into {} lists with the built-in Rust trainer...",
+            nlist
+        );
+        let index = IvfRabitqIndex::train(&base, nlist, config.bits, config.metric, config.seed)?;
+        (index, nlist)
+    };
     let build_time = build_start.elapsed();
 
     println!(
         "Constructed IVF+RaBitQ index in {:.2?} ({} vectors across {} clusters).",
         build_time,
         index.len(),
-        centroids.len()
+        clusters
     );
 
     if let (Some(query_path), Some(gt_path)) = (&config.queries, &config.groundtruth) {
@@ -197,8 +212,9 @@ fn evaluate_search(
 #[derive(Debug, Clone)]
 struct Config {
     base: PathBuf,
-    centroids: PathBuf,
-    assignments: PathBuf,
+    centroids: Option<PathBuf>,
+    assignments: Option<PathBuf>,
+    nlist: Option<usize>,
     bits: usize,
     metric: Metric,
     queries: Option<PathBuf>,
@@ -215,6 +231,7 @@ impl Config {
         let mut base = None;
         let mut centroids = None;
         let mut assignments = None;
+        let mut nlist = None;
         let mut bits = None;
         let mut metric = Metric::L2;
         let mut queries = None;
@@ -231,6 +248,7 @@ impl Config {
                 "--base" => base = Some(next_path(&mut iter, &arg)?),
                 "--centroids" => centroids = Some(next_path(&mut iter, &arg)?),
                 "--assignments" => assignments = Some(next_path(&mut iter, &arg)?),
+                "--nlist" => nlist = Some(next_usize(&mut iter, &arg)?),
                 "--bits" => bits = Some(next_usize(&mut iter, &arg)?),
                 "--metric" => {
                     let value = next_value(&mut iter, &arg)?;
@@ -250,10 +268,6 @@ impl Config {
         }
 
         let base = base.ok_or_else(|| "missing required argument --base".to_string())?;
-        let centroids =
-            centroids.ok_or_else(|| "missing required argument --centroids".to_string())?;
-        let assignments =
-            assignments.ok_or_else(|| "missing required argument --assignments".to_string())?;
         let bits = bits.ok_or_else(|| "missing required argument --bits".to_string())?;
 
         if bits == 0 || bits > 16 {
@@ -268,11 +282,21 @@ impl Config {
         if queries.is_some() ^ groundtruth.is_some() {
             return Err("--queries and --groundtruth must be provided together".to_string());
         }
+        if centroids.is_some() ^ assignments.is_some() {
+            return Err("--centroids and --assignments must be provided together".to_string());
+        }
+        if centroids.is_none() && assignments.is_none() && nlist.is_none() {
+            return Err(
+                "provide either --nlist for built-in training or both --centroids/--assignments"
+                    .to_string(),
+            );
+        }
 
         Ok(Self {
             base,
             centroids,
             assignments,
+            nlist,
             bits,
             metric,
             queries,
@@ -321,9 +345,11 @@ fn print_usage() {
     eprintln!("Usage: cargo run --bin gist -- [OPTIONS]");
     eprintln!("\nRequired arguments:");
     eprintln!("    --base <path>         Path to gist_base.fvecs");
+    eprintln!("    --bits <value>        Total number of quantisation bits (1-16)");
+    eprintln!("\nChoose one of the following training modes:");
+    eprintln!("    --nlist <value>       Number of IVF clusters to learn with the Rust trainer");
     eprintln!("    --centroids <path>    Path to centroid .fvecs file");
     eprintln!("    --assignments <path>  Path to cluster id .ivecs file");
-    eprintln!("    --bits <value>        Total number of quantisation bits (1-16)");
     eprintln!("\nOptional arguments:");
     eprintln!("    --metric <l2|ip>      Distance metric (default: l2)");
     eprintln!("    --queries <path>      Path to gist_query.fvecs");
@@ -333,4 +359,86 @@ fn print_usage() {
     eprintln!("    --max-base <value>    Limit the number of base vectors loaded");
     eprintln!("    --max-queries <value> Limit the number of query vectors loaded");
     eprintln!("    --seed <value>        Random seed for the rotator");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+    use rabitq::Metric;
+
+    #[test]
+    fn parse_config_with_precomputed_clusters() {
+        let args = vec![
+            "--base".into(),
+            "base.fvecs".into(),
+            "--centroids".into(),
+            "centroids.fvecs".into(),
+            "--assignments".into(),
+            "assignments.ivecs".into(),
+            "--bits".into(),
+            "7".into(),
+            "--metric".into(),
+            "ip".into(),
+        ];
+        let config = Config::parse(args).expect("parse config");
+        assert_eq!(config.base, std::path::PathBuf::from("base.fvecs"));
+        assert_eq!(
+            config.centroids,
+            Some(std::path::PathBuf::from("centroids.fvecs"))
+        );
+        assert_eq!(
+            config.assignments,
+            Some(std::path::PathBuf::from("assignments.ivecs"))
+        );
+        assert_eq!(config.nlist, None);
+        assert_eq!(config.bits, 7);
+        assert_eq!(config.metric, Metric::InnerProduct);
+    }
+
+    #[test]
+    fn parse_config_with_built_in_training() {
+        let args = vec![
+            "--base".into(),
+            "base.fvecs".into(),
+            "--bits".into(),
+            "6".into(),
+            "--nlist".into(),
+            "128".into(),
+            "--top-k".into(),
+            "20".into(),
+        ];
+        let config = Config::parse(args).expect("parse config");
+        assert_eq!(config.base, std::path::PathBuf::from("base.fvecs"));
+        assert_eq!(config.centroids, None);
+        assert_eq!(config.assignments, None);
+        assert_eq!(config.nlist, Some(128));
+        assert_eq!(config.bits, 6);
+        assert_eq!(config.top_k, 20);
+    }
+
+    #[test]
+    fn parse_config_requires_training_mode() {
+        let args = vec![
+            "--base".into(),
+            "base.fvecs".into(),
+            "--bits".into(),
+            "7".into(),
+        ];
+        let err = Config::parse(args).expect_err("config should fail without training mode");
+        assert!(err.contains("provide either --nlist"));
+    }
+
+    #[test]
+    fn parse_config_rejects_partial_precomputed_arguments() {
+        let args = vec![
+            "--base".into(),
+            "base.fvecs".into(),
+            "--bits".into(),
+            "7".into(),
+            "--centroids".into(),
+            "centroids.fvecs".into(),
+        ];
+        let err = Config::parse(args).expect_err("missing assignments should error");
+        assert!(err.contains("--centroids and --assignments must be provided together"));
+    }
 }

@@ -76,7 +76,11 @@ Follow the same data preparation steps shown in `example.sh`:
    If FTP is blocked in your environment, fetch the files from an alternative mirror and place them under `data/gist/` with the
    same filenames (`gist_base.fvecs`, `gist_query.fvecs`, `gist_groundtruth.ivecs`).
 
-2. **Cluster the base vectors** – the helper script mirrors the FAISS call used by the C++ sample:
+After the dataset is in place you can choose between two training workflows:
+
+### Option 1: Use pre-computed clusters (FAISS-compatible)
+
+1. **Cluster the base vectors** – the helper script mirrors the FAISS call used by the C++ sample:
    ```bash
    python python/ivf.py \
        data/gist/gist_base.fvecs \
@@ -87,7 +91,7 @@ Follow the same data preparation steps shown in `example.sh`:
    ```
    (Swap `l2` for `ip` if you plan to evaluate inner-product similarity.)
 
-3. **Build and evaluate the Rust index** – the CLI supports limiting the number of base vectors and queries so you can perform a
+2. **Build and evaluate the Rust index** – the CLI supports limiting the number of base vectors and queries so you can perform a
    smoke test without loading the full 1M-vector dataset:
    ```bash
    cargo run --release --bin gist -- \
@@ -106,6 +110,30 @@ Follow the same data preparation steps shown in `example.sh`:
    ```
    The command prints the construction time, the evaluated recall@`top-k`, and the observed queries-per-second. Remove the
    `--max-base` / `--max-queries` limits to run the full benchmark once you are comfortable with the workflow.
+
+### Option 2: Train everything in Rust (no pre-computed centroids)
+
+Skip the Python/FAISS clustering step and let the crate execute k-means internally. Provide the desired IVF list count via
+`--nlist`:
+
+```bash
+cargo run --release --bin gist -- \
+    --base data/gist/gist_base.fvecs \
+    --bits 7 \
+    --nlist 4096 \
+    --queries data/gist/gist_query.fvecs \
+    --groundtruth data/gist/gist_groundtruth.ivecs \
+    --top-k 100 \
+    --nprobe 1024 \
+    --metric l2 \
+    --max-base 200000 \
+    --max-queries 200 \
+    --seed 1337
+```
+
+The command mirrors the pre-computed flow but performs clustering in-process using the Rust `IvfRabitqIndex::train` helper. Expect
+the build phase to take longer than the pre-clustered path because the binary runs k-means internally. Once the index is trained
+the evaluation output matches the format of the pre-computed mode.
 
 All CLI options are documented in `cargo run --bin gist -- --help`.
 
