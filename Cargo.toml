@@ -1,0 +1,16 @@
+[package]
+name = "rabitq"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = { version = "0.8", features = ["std"] }
+rand_distr = "0.4"
+thiserror = "1.0"
+
+[dev-dependencies]
+rand = { version = "0.8", features = ["std"] }
+
+[lib]
+name = "rabitq"
+path = "src/lib.rs"

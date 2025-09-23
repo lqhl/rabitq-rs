@@ -36,6 +36,7 @@
 bin/
 build/
 data/
+target/
 
 *.pyc
 .clang-*
