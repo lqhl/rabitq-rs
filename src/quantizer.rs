@@ -1,0 +1,409 @@
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
+
+use crate::math::{l2_norm_sqr, subtract};
+use crate::Metric;
+
+const K_TIGHT_START: [f64; 9] = [0.0, 0.15, 0.20, 0.52, 0.59, 0.71, 0.75, 0.77, 0.81];
+const K_EPS: f64 = 1e-5;
+const K_NENUM: f64 = 10.0;
+const K_CONST_EPSILON: f32 = 1.9;
+
+/// Configuration for RaBitQ quantisation.
+#[derive(Debug, Clone, Copy)]
+pub struct RabitqConfig {
+    pub total_bits: usize,
+}
+
+impl RabitqConfig {
+    pub fn new(total_bits: usize) -> Self {
+        RabitqConfig { total_bits }
+    }
+}
+
+/// Quantised representation of a vector.
+#[derive(Debug, Clone)]
+pub struct QuantizedVector {
+    pub code: Vec<u16>,
+    pub binary_code: Vec<u8>,
+    pub ex_code: Vec<u16>,
+    pub delta: f32,
+    pub vl: f32,
+    pub f_add: f32,
+    pub f_rescale: f32,
+    pub f_error: f32,
+    pub residual_norm: f32,
+    pub f_add_ex: f32,
+    pub f_rescale_ex: f32,
+}
+
+/// Quantise a vector relative to a centroid.
+pub fn quantize_with_centroid(
+    data: &[f32],
+    centroid: &[f32],
+    total_bits: usize,
+    metric: Metric,
+) -> QuantizedVector {
+    assert_eq!(data.len(), centroid.len());
+    assert!(total_bits >= 1 && total_bits <= 16);
+    let dim = data.len();
+    let ex_bits = total_bits.saturating_sub(1);
+
+    let residual = subtract(data, centroid);
+    let mut binary_code = vec![0u8; dim];
+    for (idx, &value) in residual.iter().enumerate() {
+        if value >= 0.0 {
+            binary_code[idx] = 1u8;
+        }
+    }
+
+    let (ex_code, ipnorm_inv) = if ex_bits > 0 {
+        ex_bits_code_with_inv(&residual, ex_bits)
+    } else {
+        (vec![0u16; dim], 1.0f32)
+    };
+
+    let mut total_code = vec![0u16; dim];
+    for i in 0..dim {
+        total_code[i] = ex_code[i] + ((binary_code[i] as u16) << ex_bits);
+    }
+
+    let (f_add, f_rescale, f_error, residual_norm) =
+        compute_one_bit_factors(&residual, centroid, &binary_code, metric);
+    let cb = -((1 << ex_bits) as f32 - 0.5);
+    let mut norm_quan_sqr = 0.0f32;
+    let mut dot_residual_quant = 0.0f32;
+    for i in 0..dim {
+        let q_val = total_code[i] as f32 + cb;
+        norm_quan_sqr += q_val * q_val;
+        dot_residual_quant += residual[i] * q_val;
+    }
+
+    let norm_residual_sqr = l2_norm_sqr(&residual);
+    let norm_residual = norm_residual_sqr.sqrt();
+    let norm_quant = norm_quan_sqr.sqrt();
+    let denom = (norm_residual * norm_quant).max(f32::EPSILON);
+    let cos_similarity = (dot_residual_quant / denom).clamp(-1.0, 1.0);
+    let delta = if norm_quant <= f32::EPSILON {
+        0.0
+    } else {
+        (norm_residual / norm_quant) * cos_similarity
+    };
+    let vl = delta * cb;
+
+    let mut f_add_ex = 0.0f32;
+    let mut f_rescale_ex = 0.0f32;
+    if ex_bits > 0 {
+        let factors = compute_extended_factors(
+            &residual,
+            centroid,
+            &binary_code,
+            &ex_code,
+            ipnorm_inv,
+            metric,
+            ex_bits,
+        );
+        f_add_ex = factors.0;
+        f_rescale_ex = factors.1;
+    }
+
+    QuantizedVector {
+        code: total_code,
+        binary_code,
+        ex_code,
+        delta,
+        vl,
+        f_add,
+        f_rescale,
+        f_error,
+        residual_norm,
+        f_add_ex,
+        f_rescale_ex,
+    }
+}
+
+fn compute_one_bit_factors(
+    residual: &[f32],
+    centroid: &[f32],
+    binary_code: &[u8],
+    metric: Metric,
+) -> (f32, f32, f32, f32) {
+    let dim = residual.len();
+    let mut l2_sqr = 0.0f32;
+    let mut xu_cb_norm_sqr = 0.0f32;
+    let mut ip_resi_xucb = 0.0f32;
+    let mut ip_cent_xucb = 0.0f32;
+    let mut dot_residual_centroid = 0.0f32;
+
+    for ((&res, &cent), &bit) in residual.iter().zip(centroid.iter()).zip(binary_code.iter()) {
+        let xu = bit as f32 - 0.5f32;
+        l2_sqr += res * res;
+        xu_cb_norm_sqr += xu * xu;
+        ip_resi_xucb += res * xu;
+        ip_cent_xucb += cent * xu;
+        dot_residual_centroid += res * cent;
+    }
+
+    let l2_norm = l2_sqr.sqrt();
+    let mut denom = ip_resi_xucb;
+    if denom.abs() <= f32::EPSILON {
+        denom = f32::INFINITY;
+    }
+
+    let mut tmp_error = 0.0f32;
+    if dim > 1 {
+        let ratio = ((l2_sqr * xu_cb_norm_sqr) / (denom * denom)) - 1.0;
+        if ratio.is_finite() && ratio > 0.0 {
+            tmp_error = l2_norm * K_CONST_EPSILON * ((ratio / ((dim - 1) as f32)).max(0.0)).sqrt();
+        }
+    }
+
+    let (f_add, f_rescale, f_error) = match metric {
+        Metric::L2 => {
+            let f_add = l2_sqr + 2.0 * l2_sqr * ip_cent_xucb / denom;
+            let f_rescale = -2.0 * l2_sqr / denom;
+            let f_error = 2.0 * tmp_error;
+            (f_add, f_rescale, f_error)
+        }
+        Metric::InnerProduct => {
+            let f_add = 1.0 - dot_residual_centroid + l2_sqr * ip_cent_xucb / denom;
+            let f_rescale = -l2_sqr / denom;
+            let f_error = tmp_error;
+            (f_add, f_rescale, f_error)
+        }
+    };
+
+    (f_add, f_rescale, f_error, l2_norm)
+}
+
+fn ex_bits_code_with_inv(residual: &[f32], ex_bits: usize) -> (Vec<u16>, f32) {
+    let dim = residual.len();
+    let mut normalized_abs: Vec<f32> = residual.iter().map(|x| x.abs()).collect();
+    let norm = normalized_abs.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+    if norm <= f32::EPSILON {
+        return (vec![0u16; dim], 1.0);
+    }
+
+    for value in normalized_abs.iter_mut() {
+        *value /= norm;
+    }
+
+    let t = best_rescale_factor(&normalized_abs, ex_bits);
+    quantize_ex_with_inv(&normalized_abs, residual, ex_bits, t)
+}
+
+fn best_rescale_factor(o_abs: &[f32], ex_bits: usize) -> f64 {
+    let dim = o_abs.len();
+    let max_o = o_abs.iter().cloned().fold(0.0f32, f32::max) as f64;
+    if max_o <= f64::EPSILON {
+        return 1.0;
+    }
+
+    let table_idx = ex_bits.min(K_TIGHT_START.len() - 1);
+    let t_end = (((1 << ex_bits) - 1) as f64 + K_NENUM) / max_o;
+    let t_start = t_end * K_TIGHT_START[table_idx];
+
+    let mut cur_o_bar = vec![0i32; dim];
+    let mut sqr_denominator = dim as f64 * 0.25;
+    let mut numerator = 0.0f64;
+
+    for (idx, &val) in o_abs.iter().enumerate() {
+        let cur = ((t_start * val as f64) + K_EPS) as i32;
+        cur_o_bar[idx] = cur;
+        sqr_denominator += (cur * cur + cur) as f64;
+        numerator += (cur as f64 + 0.5) * val as f64;
+    }
+
+    #[derive(Copy, Clone, Debug)]
+    struct HeapEntry {
+        t: f64,
+        idx: usize,
+    }
+
+    impl PartialEq for HeapEntry {
+        fn eq(&self, other: &Self) -> bool {
+            self.t.to_bits() == other.t.to_bits() && self.idx == other.idx
+        }
+    }
+
+    impl Eq for HeapEntry {}
+
+    impl PartialOrd for HeapEntry {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl Ord for HeapEntry {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.t
+                .total_cmp(&other.t)
+                .then_with(|| self.idx.cmp(&other.idx))
+        }
+    }
+
+    let mut heap: BinaryHeap<Reverse<HeapEntry>> = BinaryHeap::new();
+    for (idx, &val) in o_abs.iter().enumerate() {
+        if val > 0.0 {
+            let next_t = (cur_o_bar[idx] + 1) as f64 / val as f64;
+            heap.push(Reverse(HeapEntry { t: next_t, idx }));
+        }
+    }
+
+    let mut max_ip = 0.0f64;
+    let mut best_t = t_start;
+
+    while let Some(Reverse(HeapEntry { t: cur_t, idx })) = heap.pop() {
+        if cur_t >= t_end {
+            continue;
+        }
+
+        cur_o_bar[idx] += 1;
+        let update = cur_o_bar[idx];
+        sqr_denominator += 2.0 * update as f64;
+        numerator += o_abs[idx] as f64;
+
+        let cur_ip = numerator / sqr_denominator.sqrt();
+        if cur_ip > max_ip {
+            max_ip = cur_ip;
+            best_t = cur_t;
+        }
+
+        if update < (1 << ex_bits) - 1 && o_abs[idx] > 0.0 {
+            let t_next = (update + 1) as f64 / o_abs[idx] as f64;
+            if t_next < t_end {
+                heap.push(Reverse(HeapEntry { t: t_next, idx }));
+            }
+        }
+    }
+
+    if best_t <= 0.0 {
+        t_start.max(f64::EPSILON)
+    } else {
+        best_t
+    }
+}
+
+fn quantize_ex_with_inv(
+    o_abs: &[f32],
+    residual: &[f32],
+    ex_bits: usize,
+    t: f64,
+) -> (Vec<u16>, f32) {
+    let dim = o_abs.len();
+    if dim == 0 {
+        return (Vec::new(), 1.0);
+    }
+
+    let mut code = vec![0u16; dim];
+    let max_val = (1 << ex_bits) - 1;
+    let mut ipnorm = 0.0f64;
+
+    for i in 0..dim {
+        let mut cur = (t * o_abs[i] as f64 + K_EPS) as i32;
+        if cur > max_val as i32 {
+            cur = max_val as i32;
+        }
+        code[i] = cur as u16;
+        ipnorm += (cur as f64 + 0.5) * o_abs[i] as f64;
+    }
+
+    let mut ipnorm_inv = if ipnorm.is_finite() && ipnorm > 0.0 {
+        (1.0 / ipnorm) as f32
+    } else {
+        1.0
+    };
+
+    let mask = max_val as u16;
+    if max_val > 0 {
+        for (idx, &res) in residual.iter().enumerate() {
+            if res < 0.0 {
+                code[idx] = (!code[idx]) & mask;
+            }
+        }
+    }
+
+    if !ipnorm_inv.is_finite() {
+        ipnorm_inv = 1.0;
+    }
+
+    (code, ipnorm_inv)
+}
+
+fn compute_extended_factors(
+    residual: &[f32],
+    centroid: &[f32],
+    binary_code: &[u8],
+    ex_code: &[u16],
+    ipnorm_inv: f32,
+    metric: Metric,
+    ex_bits: usize,
+) -> (f32, f32) {
+    let dim = residual.len();
+    let cb = -((1 << ex_bits) as f32 - 0.5);
+
+    let mut l2_sqr = 0.0f32;
+    let mut xu_cb_norm_sqr = 0.0f32;
+    let mut ip_resi_xucb = 0.0f32;
+    let mut ip_cent_xucb = 0.0f32;
+    let mut dot_residual_centroid = 0.0f32;
+
+    for i in 0..dim {
+        let total = ex_code[i] as u32 + ((binary_code[i] as u32) << ex_bits);
+        let xu_cb = total as f32 + cb;
+        let res = residual[i];
+        l2_sqr += res * res;
+        xu_cb_norm_sqr += xu_cb * xu_cb;
+        ip_resi_xucb += res * xu_cb;
+        ip_cent_xucb += centroid[i] * xu_cb;
+        dot_residual_centroid += res * centroid[i];
+    }
+
+    let l2_norm = l2_sqr.sqrt();
+    let mut denom = ip_resi_xucb * ip_resi_xucb;
+    if denom <= f32::EPSILON {
+        denom = f32::INFINITY;
+    }
+
+    let mut tmp_error = 0.0f32;
+    if dim > 1 {
+        let ratio = ((l2_sqr * xu_cb_norm_sqr) / denom) - 1.0;
+        if ratio > 0.0 {
+            tmp_error = l2_norm * K_CONST_EPSILON * ((ratio / ((dim - 1) as f32)).max(0.0)).sqrt();
+        }
+    }
+
+    let safe_denom = if ip_resi_xucb.abs() <= f32::EPSILON {
+        f32::INFINITY
+    } else {
+        ip_resi_xucb
+    };
+
+    let (f_add_ex, f_rescale_ex) = match metric {
+        Metric::L2 => {
+            let f_add = l2_sqr + 2.0 * l2_sqr * ip_cent_xucb / safe_denom;
+            let f_rescale = -2.0 * l2_norm * ipnorm_inv;
+            (f_add, f_rescale)
+        }
+        Metric::InnerProduct => {
+            let f_add = 1.0 - dot_residual_centroid + l2_sqr * ip_cent_xucb / safe_denom;
+            let f_rescale = -l2_norm * ipnorm_inv;
+            (f_add, f_rescale)
+        }
+    };
+
+    let _ = tmp_error; // retain structure parity; tmp_error may be used in future
+
+    (f_add_ex, f_rescale_ex)
+}
+
+/// Reconstruct a vector from its quantised representation and centroid.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn reconstruct_into(centroid: &[f32], quantized: &QuantizedVector, output: &mut [f32]) {
+    assert_eq!(centroid.len(), quantized.code.len());
+    assert_eq!(output.len(), centroid.len());
+    for i in 0..centroid.len() {
+        output[i] = centroid[i] + quantized.delta * quantized.code[i] as f32 + quantized.vl;
+    }
+}
