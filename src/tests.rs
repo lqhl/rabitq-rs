@@ -1,6 +1,13 @@
+use std::io::Cursor;
+
 use rand::prelude::*;
 
+use crate::io::{
+    read_fvecs_from_reader, read_groundtruth_from_reader, read_ids_from_reader,
+    read_ivecs_from_reader,
+};
 use crate::ivf::{IvfRabitqIndex, SearchParams};
+use crate::kmeans::run_kmeans;
 use crate::quantizer::{quantize_with_centroid, reconstruct_into};
 use crate::Metric;
 
@@ -151,5 +158,130 @@ fn one_bit_search_has_no_extended_pruning() {
             diag.estimated > 0,
             "no candidates were fully estimated in one-bit search"
         );
+    }
+}
+
+#[test]
+fn fvecs_reader_parses_vectors() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(3i32).to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&2.0f32.to_le_bytes());
+    bytes.extend_from_slice(&3.0f32.to_le_bytes());
+    bytes.extend_from_slice(&(3i32).to_le_bytes());
+    bytes.extend_from_slice(&4.0f32.to_le_bytes());
+    bytes.extend_from_slice(&5.0f32.to_le_bytes());
+    bytes.extend_from_slice(&6.0f32.to_le_bytes());
+
+    let vectors = read_fvecs_from_reader(Cursor::new(bytes.clone()), None).expect("read fvecs");
+    assert_eq!(vectors.len(), 2);
+    assert_eq!(vectors[0], vec![1.0, 2.0, 3.0]);
+    assert_eq!(vectors[1], vec![4.0, 5.0, 6.0]);
+
+    let limited = read_fvecs_from_reader(Cursor::new(bytes), Some(1)).expect("read fvecs limit");
+    assert_eq!(limited.len(), 1);
+}
+
+#[test]
+fn ivecs_reader_parses_vectors() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(2i32).to_le_bytes());
+    bytes.extend_from_slice(&7i32.to_le_bytes());
+    bytes.extend_from_slice(&8i32.to_le_bytes());
+    bytes.extend_from_slice(&(2i32).to_le_bytes());
+    bytes.extend_from_slice(&1i32.to_le_bytes());
+    bytes.extend_from_slice(&9i32.to_le_bytes());
+
+    let rows = read_ivecs_from_reader(Cursor::new(bytes), None).expect("read ivecs");
+    assert_eq!(rows, vec![vec![7, 8], vec![1, 9]]);
+
+    let mut id_bytes = Vec::new();
+    id_bytes.extend_from_slice(&(1i32).to_le_bytes());
+    id_bytes.extend_from_slice(&5i32.to_le_bytes());
+    id_bytes.extend_from_slice(&(1i32).to_le_bytes());
+    id_bytes.extend_from_slice(&6i32.to_le_bytes());
+    id_bytes.extend_from_slice(&(1i32).to_le_bytes());
+    id_bytes.extend_from_slice(&11i32.to_le_bytes());
+
+    let ids = read_ids_from_reader(Cursor::new(id_bytes), None).expect("read ids");
+    assert_eq!(ids, vec![5usize, 6usize, 11usize]);
+
+    let mut gt_bytes = Vec::new();
+    gt_bytes.extend_from_slice(&(3i32).to_le_bytes());
+    gt_bytes.extend_from_slice(&0i32.to_le_bytes());
+    gt_bytes.extend_from_slice(&1i32.to_le_bytes());
+    gt_bytes.extend_from_slice(&2i32.to_le_bytes());
+    gt_bytes.extend_from_slice(&(2i32).to_le_bytes());
+    gt_bytes.extend_from_slice(&3i32.to_le_bytes());
+    gt_bytes.extend_from_slice(&4i32.to_le_bytes());
+
+    let groundtruth =
+        read_groundtruth_from_reader(Cursor::new(gt_bytes), None).expect("read groundtruth");
+    assert_eq!(groundtruth, vec![vec![0, 1, 2], vec![3, 4]]);
+}
+
+#[test]
+fn preclustered_training_matches_naive_l2() {
+    let dim = 28;
+    let total = 240;
+    let mut rng = StdRng::seed_from_u64(0xA51CE);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    let mut kmeans_rng = StdRng::seed_from_u64(0x5EED);
+    let kmeans = run_kmeans(&data, 32, 25, &mut kmeans_rng);
+
+    let index = IvfRabitqIndex::train_with_clusters(
+        &data,
+        &kmeans.centroids,
+        &kmeans.assignments,
+        7,
+        Metric::L2,
+        0xBEEF,
+    )
+    .expect("train with clusters");
+
+    let params = SearchParams::new(6, 16);
+    for query in data.iter().take(8) {
+        let (fastscan, _) = index
+            .search_with_diagnostics(query, params)
+            .expect("fastscan search");
+        let naive = index.search_naive(query, params).expect("naive search");
+        assert_eq!(fastscan, naive, "preclustered search diverged on L2");
+    }
+}
+
+#[test]
+fn preclustered_training_matches_naive_ip() {
+    let dim = 18;
+    let total = 180;
+    let mut rng = StdRng::seed_from_u64(0xDEADBEEF);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    let mut kmeans_rng = StdRng::seed_from_u64(0xB16B00B5);
+    let kmeans = run_kmeans(&data, 24, 30, &mut kmeans_rng);
+
+    let index = IvfRabitqIndex::train_with_clusters(
+        &data,
+        &kmeans.centroids,
+        &kmeans.assignments,
+        6,
+        Metric::InnerProduct,
+        0x1234_5678,
+    )
+    .expect("train with clusters");
+
+    let params = SearchParams::new(5, 12);
+    for query in data.iter().take(10) {
+        let (fastscan, _) = index
+            .search_with_diagnostics(query, params)
+            .expect("fastscan search");
+        let naive = index.search_naive(query, params).expect("naive search");
+        assert_eq!(fastscan, naive, "preclustered search diverged on IP");
     }
 }

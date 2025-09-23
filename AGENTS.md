@@ -14,3 +14,9 @@
 - [x] Add focused tests that exercise the extended-code pruning path and confirm it activates while preserving exact search parity.
 - [x] Rework the IVF search path to consume the quantized distance estimators directly (without reconstruction) so the Rust behavior matches the C++ fastscan/booster pipeline.
 - [x] Update the naive verifier and diagnostics to operate on quantized estimates and keep the regression suite aligned with the C++ semantics.
+
+## Current Task Steps
+- [x] Verify the Rust IVF + RaBitQ pipeline against the gist dataset as described in `example.sh`.
+- [x] Address any issues uncovered during the dataset-backed test, including implementing missing functionality and adding regression tests.
+- [x] Refresh the project documentation by archiving the existing `README.md` to `README.origin.md` and authoring a new README that explains usage and testing.
+- [x] Run `cargo fmt`, `cargo clippy`, and `cargo test` after code changes, ensuring the repository is clean.

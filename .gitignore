@@ -38,6 +38,10 @@ build/
 data/
 target/
 
+# keep Rust binary sources under src/
+!src/bin/
+!src/bin/**
+
 *.pyc
 .clang-*
 
