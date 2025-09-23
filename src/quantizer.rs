@@ -45,7 +45,7 @@ pub fn quantize_with_centroid(
     metric: Metric,
 ) -> QuantizedVector {
     assert_eq!(data.len(), centroid.len());
-    assert!(total_bits >= 1 && total_bits <= 16);
+    assert!((1..=16).contains(&total_bits));
     let dim = data.len();
     let ex_bits = total_bits.saturating_sub(1);
 
@@ -302,8 +302,8 @@ fn quantize_ex_with_inv(
 
     for i in 0..dim {
         let mut cur = (t * o_abs[i] as f64 + K_EPS) as i32;
-        if cur > max_val as i32 {
-            cur = max_val as i32;
+        if cur > max_val {
+            cur = max_val;
         }
         code[i] = cur as u16;
         ipnorm += (cur as f64 + 0.5) * o_abs[i] as f64;

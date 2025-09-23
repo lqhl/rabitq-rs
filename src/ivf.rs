@@ -79,7 +79,7 @@ impl Eq for HeapEntry {}
 
 impl PartialOrd for HeapEntry {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.candidate.distance.total_cmp(&other.candidate.distance))
+        Some(self.cmp(other))
     }
 }
 
@@ -143,12 +143,123 @@ impl IvfRabitqIndex {
             assignments,
         } = run_kmeans(&rotated_data, nlist, 30, &mut rng);
 
-        let mut clusters: Vec<ClusterEntry> =
-            centroids.into_iter().map(ClusterEntry::new).collect();
+        Self::build_from_rotated(
+            dim,
+            metric,
+            rotator,
+            centroids,
+            &rotated_data,
+            &assignments,
+            total_bits,
+        )
+    }
+
+    /// Train an index using externally provided centroids and cluster assignments.
+    pub fn train_with_clusters(
+        data: &[Vec<f32>],
+        centroids: &[Vec<f32>],
+        assignments: &[usize],
+        total_bits: usize,
+        metric: Metric,
+        seed: u64,
+    ) -> Result<Self, RabitqError> {
+        if data.is_empty() {
+            return Err(RabitqError::InvalidConfig(
+                "training data must be non-empty",
+            ));
+        }
+        if centroids.is_empty() {
+            return Err(RabitqError::InvalidConfig("centroids must be non-empty"));
+        }
+        if assignments.len() != data.len() {
+            return Err(RabitqError::InvalidConfig(
+                "assignments length must match data length",
+            ));
+        }
+        if total_bits == 0 || total_bits > 16 {
+            return Err(RabitqError::InvalidConfig(
+                "total_bits must be between 1 and 16",
+            ));
+        }
+
+        let dim = data[0].len();
+        if data.iter().any(|v| v.len() != dim) {
+            return Err(RabitqError::InvalidConfig(
+                "input vectors must share the same dimension",
+            ));
+        }
+        if centroids.iter().any(|c| c.len() != dim) {
+            return Err(RabitqError::InvalidConfig(
+                "centroids must match the data dimensionality",
+            ));
+        }
+
+        let nlist = centroids.len();
+        if nlist == 0 {
+            return Err(RabitqError::InvalidConfig("nlist must be positive"));
+        }
+        if nlist > data.len() {
+            return Err(RabitqError::InvalidConfig(
+                "nlist cannot exceed number of vectors",
+            ));
+        }
+        if assignments.iter().any(|&cid| cid >= nlist) {
+            return Err(RabitqError::InvalidConfig(
+                "assignments reference invalid cluster ids",
+            ));
+        }
+
+        let rotator = RandomRotator::new(dim, seed);
+        let rotated_data: Vec<Vec<f32>> = data.iter().map(|v| rotator.rotate(v)).collect();
+        let rotated_centroids: Vec<Vec<f32>> =
+            centroids.iter().map(|c| rotator.rotate(c)).collect();
+
+        Self::build_from_rotated(
+            dim,
+            metric,
+            rotator,
+            rotated_centroids,
+            &rotated_data,
+            assignments,
+            total_bits,
+        )
+    }
+
+    fn build_from_rotated(
+        dim: usize,
+        metric: Metric,
+        rotator: RandomRotator,
+        rotated_centroids: Vec<Vec<f32>>,
+        rotated_data: &[Vec<f32>],
+        assignments: &[usize],
+        total_bits: usize,
+    ) -> Result<Self, RabitqError> {
+        if assignments.len() != rotated_data.len() {
+            return Err(RabitqError::InvalidConfig(
+                "assignments length must match number of vectors",
+            ));
+        }
+        if total_bits == 0 || total_bits > 16 {
+            return Err(RabitqError::InvalidConfig(
+                "total_bits must be between 1 and 16",
+            ));
+        }
+
+        let mut clusters: Vec<ClusterEntry> = rotated_centroids
+            .into_iter()
+            .map(ClusterEntry::new)
+            .collect();
+        if clusters.is_empty() {
+            return Err(RabitqError::InvalidConfig("nlist must be positive"));
+        }
 
         for (idx, rotated_vec) in rotated_data.iter().enumerate() {
             let cluster_id = assignments[idx];
-            let cluster = &mut clusters[cluster_id];
+            let cluster = clusters
+                .get_mut(cluster_id)
+                .ok_or(RabitqError::InvalidConfig(
+                    "assignments reference invalid cluster ids",
+                ))?;
             let quantized =
                 quantize_with_centroid(rotated_vec, &cluster.centroid, total_bits, metric);
             cluster.ids.push(idx);
