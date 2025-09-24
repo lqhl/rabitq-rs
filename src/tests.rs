@@ -285,3 +285,28 @@ fn preclustered_training_matches_naive_ip() {
         assert_eq!(fastscan, naive, "preclustered search diverged on IP");
     }
 }
+
+#[test]
+fn kmeans_parallel_path_is_deterministic() {
+    let dim = 36;
+    let total = 320;
+    let mut data_rng = StdRng::seed_from_u64(0xCAFE_FEED);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut data_rng));
+    }
+
+    let seed = 0xFACE_FEED;
+    let mut rng_a = StdRng::seed_from_u64(seed);
+    let mut rng_b = StdRng::seed_from_u64(seed);
+
+    let result_a = run_kmeans(&data, 28, 20, &mut rng_a);
+    let result_b = run_kmeans(&data, 28, 20, &mut rng_b);
+
+    assert_eq!(result_a.assignments, result_b.assignments);
+    for (centroid_a, centroid_b) in result_a.centroids.iter().zip(result_b.centroids.iter()) {
+        for (a, b) in centroid_a.iter().zip(centroid_b.iter()) {
+            assert!((a - b).abs() <= 1e-5, "centroid mismatch: {a} vs {b}");
+        }
+    }
+}

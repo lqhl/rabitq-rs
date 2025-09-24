@@ -7,6 +7,7 @@ edition = "2021"
 rand = { version = "0.8", features = ["std"] }
 rand_distr = "0.4"
 thiserror = "1.0"
+rayon = "1.8"
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["std"] }

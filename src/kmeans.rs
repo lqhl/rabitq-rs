@@ -1,4 +1,5 @@
 use rand::prelude::*;
+use rayon::prelude::*;
 
 use crate::math::l2_distance_sqr;
 
@@ -19,15 +20,20 @@ pub fn run_kmeans(data: &[Vec<f32>], k: usize, max_iter: usize, rng: &mut StdRng
     let mut assignments = vec![0usize; data.len()];
 
     for _ in 0..max_iter {
-        let mut changed = 0usize;
         // Assignment step
-        for (idx, vector) in data.iter().enumerate() {
-            let (best_cluster, _) = nearest_centroid(vector, &centroids);
-            if assignments[idx] != best_cluster {
-                assignments[idx] = best_cluster;
-                changed += 1;
-            }
-        }
+        let changed = assignments
+            .par_iter_mut()
+            .enumerate()
+            .map(|(idx, assignment)| {
+                let (best_cluster, _) = nearest_centroid(&data[idx], &centroids);
+                if *assignment != best_cluster {
+                    *assignment = best_cluster;
+                    1usize
+                } else {
+                    0usize
+                }
+            })
+            .sum::<usize>();
 
         if changed == 0 {
             break;
@@ -105,23 +111,44 @@ fn recompute_centroids(
 ) {
     let k = centroids.len();
     let dim = centroids[0].len();
-    let mut counts = vec![0usize; k];
-    let mut sums = vec![vec![0.0f32; dim]; k];
 
-    for (vector, &cluster) in data.iter().zip(assignments.iter()) {
-        counts[cluster] += 1;
-        for (sum, value) in sums[cluster].iter_mut().zip(vector.iter()) {
-            *sum += *value;
-        }
-    }
+    let (sums, counts) = data
+        .par_iter()
+        .zip(assignments.par_iter())
+        .fold(
+            || (vec![vec![0.0f32; dim]; k], vec![0usize; k]),
+            |mut acc, (vector, &cluster)| {
+                acc.1[cluster] += 1;
+                let cluster_sum = &mut acc.0[cluster];
+                for (sum, value) in cluster_sum.iter_mut().zip(vector.iter()) {
+                    *sum += *value;
+                }
+                acc
+            },
+        )
+        .reduce(
+            || (vec![vec![0.0f32; dim]; k], vec![0usize; k]),
+            |mut left, (right_sums, right_counts)| {
+                for (dst, src) in left.0.iter_mut().zip(right_sums.iter()) {
+                    for (dst_val, src_val) in dst.iter_mut().zip(src.iter()) {
+                        *dst_val += *src_val;
+                    }
+                }
+                for (dst_count, src_count) in left.1.iter_mut().zip(right_counts.iter()) {
+                    *dst_count += *src_count;
+                }
+                left
+            },
+        );
 
     for cid in 0..k {
         if counts[cid] == 0 {
             let idx = rng.gen_range(0..data.len());
             centroids[cid] = data[idx].clone();
         } else {
+            let inv = 1.0f32 / counts[cid] as f32;
             for d in 0..dim {
-                centroids[cid][d] = sums[cid][d] / counts[cid] as f32;
+                centroids[cid][d] = sums[cid][d] * inv;
             }
         }
     }

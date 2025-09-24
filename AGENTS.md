@@ -21,3 +21,6 @@
 - [x] Refresh the project documentation by archiving the existing `README.md` to `README.origin.md` and authoring a new README that explains usage and testing.
 - [x] Run `cargo fmt`, `cargo clippy`, and `cargo test` after code changes, ensuring the repository is clean.
 - [x] Extend the `gist` CLI with an in-crate training mode (`--nlist`) and document how to evaluate the dataset without precomputed centroids.
+- [x] Investigate and resolve the k-means training hang observed when running the `gist` CLI with in-crate clustering.
+- [x] Add regression coverage that exercises the optimised k-means path to ensure deterministic convergence.
+- [x] Run `cargo fmt`, `cargo clippy`, and `cargo test` after implementing the fix, leaving the tree clean.
