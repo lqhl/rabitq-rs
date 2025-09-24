@@ -221,6 +221,50 @@ fn ivecs_reader_parses_vectors() {
 }
 
 #[test]
+fn third_party_kmeans_converges_on_separated_clusters() {
+    let data = vec![
+        vec![0.0, 0.0],
+        vec![0.2, -0.1],
+        vec![-0.1, 0.3],
+        vec![4.0, 4.2],
+        vec![3.9, 4.1],
+        vec![4.3, 3.8],
+    ];
+
+    let mut rng = StdRng::seed_from_u64(0xACED);
+    let result = run_kmeans(&data, 2, 25, &mut rng);
+
+    assert_eq!(result.centroids.len(), 2);
+    assert_eq!(result.assignments.len(), data.len());
+
+    let mut centroids = result.centroids.clone();
+    centroids.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap());
+    let left = &centroids[0];
+    let right = &centroids[1];
+
+    assert!(
+        left[0].abs() < 0.5 && left[1].abs() < 0.5,
+        "left centroid: {:?}",
+        left
+    );
+    assert!(
+        (right[0] - 4.0).abs() < 0.5 && (right[1] - 4.0).abs() < 0.5,
+        "right centroid: {:?}",
+        right
+    );
+
+    let first_cluster = result.assignments[0];
+    assert!(result.assignments[1..3]
+        .iter()
+        .all(|&assignment| assignment == first_cluster));
+    let second_cluster = result.assignments[3];
+    assert!(result.assignments[4..]
+        .iter()
+        .all(|&assignment| assignment == second_cluster));
+    assert_ne!(first_cluster, second_cluster);
+}
+
+#[test]
 fn preclustered_training_matches_naive_l2() {
     let dim = 28;
     let total = 240;

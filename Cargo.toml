@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+kmeans = "2.0.1"
 rand = { version = "0.8", features = ["std"] }
 rand_distr = "0.4"
 thiserror = "1.0"

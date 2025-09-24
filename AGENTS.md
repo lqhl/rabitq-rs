@@ -21,3 +21,10 @@
 - [x] Refresh the project documentation by archiving the existing `README.md` to `README.origin.md` and authoring a new README that explains usage and testing.
 - [x] Run `cargo fmt`, `cargo clippy`, and `cargo test` after code changes, ensuring the repository is clean.
 - [x] Extend the `gist` CLI with an in-crate training mode (`--nlist`) and document how to evaluate the dataset without precomputed centroids.
+
+## Active Task Steps
+- [x] Analyse the `kmeans` crate API and determine how to integrate it as a replacement for the custom trainer.
+- [x] Swap out `src/kmeans.rs` for a wrapper around the third-party crate, ensuring deterministic seeding and compatibility with the existing IVF pipeline and tests.
+- [x] Update or expand regression tests if needed so that k-means backed flows remain covered.
+- [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` to validate the workspace.
+- [x] Execute README option 1 and option 2 after the change and capture recall / QPS for comparison against the C++ baseline.
