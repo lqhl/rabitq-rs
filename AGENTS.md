@@ -28,3 +28,24 @@
 - [x] Update or expand regression tests if needed so that k-means backed flows remain covered.
 - [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` to validate the workspace.
 - [x] Execute README option 1 and option 2 after the change and capture recall / QPS for comparison against the C++ baseline.
+
+## Debug Task Steps
+- [x] Instrument the `gist` CLI to emit stack traces when interrupted via Ctrl-C so hanging runs can be diagnosed.
+- [x] Add progress logging around large dataset ingestion (base, centroid, assignment, and ground-truth files) to surface long-running phases.
+- [x] Back the new diagnostics with targeted unit coverage and validate the workspace with `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test`.
+
+## Performance Optimization Steps
+- [x] Inspect the RaBitQ training path to understand why the SIMD configuration defaults to 16 lanes on non-AVX512 CPUs.
+- [x] Add runtime SIMD lane detection with an override hook so k-means can match the host's vector width without recompilation.
+- [x] Cover the new lane-selection and override logic with regression tests alongside the existing k-means suite.
+- [x] Re-run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` after the optimizations to confirm a clean workspace.
+
+## KMeans Faiss-Style Rewrite Steps
+- [x] Sketch the GEMM-based Lloyd iteration pipeline, including sampling, progressive dimension stages, and centroid reseeding strategy inspired by Faiss.
+- [x] Replace `src/kmeans.rs` with the new trainer, wiring up the GEMM assignment path, deterministic k-means++ seeding, and post-training full-dataset assignments.
+- [x] Extend the k-means unit tests to cover the sampling policy, progressive dimension schedule, and determinism of the new implementation.
+- [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` to validate the rewrite.
+
+## Performance Verification Steps
+- [ ] Run the `gist` CLI with the provided dataset to confirm the optimized k-means path completes and record its wall-clock duration.
+  - Blocked: the `data/gist/*.fvecs` and `data/gist/*.ivecs` assets are not present in this workspace image, so the command exits with `No such file or directory`.

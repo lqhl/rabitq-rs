@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-kmeans = "2.0.1"
+matrixmultiply = "0.3"
+rayon = "1.8"
 rand = { version = "0.8", features = ["std"] }
 rand_distr = "0.4"
 thiserror = "1.0"
+signal-hook = { version = "0.3", features = ["iterator"] }
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["std"] }

@@ -3,10 +3,13 @@ use std::fs::File;
 use std::io::{self, BufReader, ErrorKind, Read};
 use std::path::Path;
 
+const PROGRESS_INTERVAL: usize = 50_000;
+
 fn read_vecs_from_reader<R, T, F>(
     mut reader: R,
     limit: Option<usize>,
     convert: F,
+    progress_label: &str,
 ) -> io::Result<Vec<Vec<T>>>
 where
     R: Read,
@@ -51,6 +54,7 @@ where
             vector.push(convert(bytes));
         }
         vectors.push(vector);
+        log_progress(progress_label, vectors.len());
     }
 
     Ok(vectors)
@@ -60,14 +64,14 @@ pub fn read_fvecs_from_reader<R: Read>(
     reader: R,
     limit: Option<usize>,
 ) -> io::Result<Vec<Vec<f32>>> {
-    read_vecs_from_reader(reader, limit, f32::from_le_bytes)
+    read_vecs_from_reader(reader, limit, f32::from_le_bytes, "vectors")
 }
 
 pub fn read_ivecs_from_reader<R: Read>(
     reader: R,
     limit: Option<usize>,
 ) -> io::Result<Vec<Vec<i32>>> {
-    read_vecs_from_reader(reader, limit, i32::from_le_bytes)
+    read_vecs_from_reader(reader, limit, i32::from_le_bytes, "vectors")
 }
 
 pub fn read_fvecs<P: AsRef<Path>>(path: P, limit: Option<usize>) -> io::Result<Vec<Vec<f32>>> {
@@ -132,6 +136,7 @@ fn convert_ids(rows: Vec<Vec<i32>>) -> io::Result<Vec<usize>> {
             ));
         }
         ids.push(value as usize);
+        log_progress("cluster assignments", ids.len());
     }
     Ok(ids)
 }
@@ -150,6 +155,36 @@ fn convert_rows(rows: Vec<Vec<i32>>) -> io::Result<Vec<Vec<usize>>> {
             converted_row.push(value as usize);
         }
         converted.push(converted_row);
+        log_progress("ground truth rows", converted.len());
     }
     Ok(converted)
+}
+
+fn log_progress(label: &str, count: usize) {
+    if should_log_progress(count, PROGRESS_INTERVAL) {
+        println!("  processed {count} {label} so far...");
+    }
+}
+
+fn should_log_progress(count: usize, interval: usize) -> bool {
+    interval > 0 && count != 0 && count % interval == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_log_progress;
+
+    #[test]
+    fn progress_triggers_on_exact_multiples() {
+        assert!(!should_log_progress(0, 5));
+        assert!(!should_log_progress(4, 5));
+        assert!(should_log_progress(5, 5));
+        assert!(!should_log_progress(6, 5));
+        assert!(should_log_progress(10, 5));
+    }
+
+    #[test]
+    fn progress_handles_zero_interval() {
+        assert!(!should_log_progress(5, 0));
+    }
 }
