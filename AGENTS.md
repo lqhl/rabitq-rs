@@ -33,3 +33,9 @@
 - [x] Instrument the `gist` CLI to emit stack traces when interrupted via Ctrl-C so hanging runs can be diagnosed.
 - [x] Add progress logging around large dataset ingestion (base, centroid, assignment, and ground-truth files) to surface long-running phases.
 - [x] Back the new diagnostics with targeted unit coverage and validate the workspace with `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test`.
+
+## Performance Optimization Steps
+- [x] Inspect the RaBitQ training path to understand why the SIMD configuration defaults to 16 lanes on non-AVX512 CPUs.
+- [x] Add runtime SIMD lane detection with an override hook so k-means can match the host's vector width without recompilation.
+- [x] Cover the new lane-selection and override logic with regression tests alongside the existing k-means suite.
+- [x] Re-run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` after the optimizations to confirm a clean workspace.
