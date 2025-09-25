@@ -45,3 +45,7 @@
 - [x] Replace `src/kmeans.rs` with the new trainer, wiring up the GEMM assignment path, deterministic k-means++ seeding, and post-training full-dataset assignments.
 - [x] Extend the k-means unit tests to cover the sampling policy, progressive dimension schedule, and determinism of the new implementation.
 - [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` to validate the rewrite.
+
+## Performance Verification Steps
+- [ ] Run the `gist` CLI with the provided dataset to confirm the optimized k-means path completes and record its wall-clock duration.
+  - Blocked: the `data/gist/*.fvecs` and `data/gist/*.ivecs` assets are not present in this workspace image, so the command exits with `No such file or directory`.
