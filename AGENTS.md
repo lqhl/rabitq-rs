@@ -28,3 +28,8 @@
 - [x] Update or expand regression tests if needed so that k-means backed flows remain covered.
 - [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` to validate the workspace.
 - [x] Execute README option 1 and option 2 after the change and capture recall / QPS for comparison against the C++ baseline.
+
+## Debug Task Steps
+- [x] Instrument the `gist` CLI to emit stack traces when interrupted via Ctrl-C so hanging runs can be diagnosed.
+- [x] Add progress logging around large dataset ingestion (base, centroid, assignment, and ground-truth files) to surface long-running phases.
+- [x] Back the new diagnostics with targeted unit coverage and validate the workspace with `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test`.

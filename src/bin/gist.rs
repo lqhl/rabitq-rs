@@ -1,3 +1,4 @@
+use std::backtrace::Backtrace;
 use std::collections::HashSet;
 use std::env;
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
@@ -12,6 +13,10 @@ use rabitq::Metric;
 type CliResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 fn main() {
+    if let Err(err) = install_signal_handlers() {
+        eprintln!("Warning: failed to install signal handlers: {err}");
+    }
+
     if env::args().any(|arg| arg == "--help" || arg == "-h") {
         print_usage();
         return;
@@ -80,6 +85,7 @@ fn run(config: Config) -> CliResult<()> {
             "Loading cluster assignments from {}...",
             assignments_path.display()
         );
+        println!("  This may take a while; progress updates will be printed periodically.");
         let assignments = read_ids(assignments_path, config.max_base)?;
         if assignments.len() != base.len() {
             return Err(Box::new(IoError::new(
@@ -91,6 +97,8 @@ fn run(config: Config) -> CliResult<()> {
                 ),
             )));
         }
+
+        println!("Loaded {} cluster assignments.", assignments.len());
 
         let index = IvfRabitqIndex::train_with_clusters(
             &base,
@@ -359,6 +367,24 @@ fn print_usage() {
     eprintln!("    --max-base <value>    Limit the number of base vectors loaded");
     eprintln!("    --max-queries <value> Limit the number of query vectors loaded");
     eprintln!("    --seed <value>        Random seed for the rotator");
+}
+
+fn install_signal_handlers() -> std::io::Result<()> {
+    use signal_hook::consts::signal::{SIGINT, SIGTERM};
+    use signal_hook::iterator::Signals;
+
+    let mut signals = Signals::new([SIGINT, SIGTERM])?;
+    std::thread::spawn(move || {
+        if let Some(signal) = signals.forever().next() {
+            eprintln!("Received signal {signal}; dumping stack trace...");
+            let backtrace = Backtrace::force_capture();
+            eprintln!("{backtrace}");
+            eprintln!("Exiting due to signal {signal}.");
+            process::exit(130);
+        }
+    });
+
+    Ok(())
 }
 
 #[cfg(test)]

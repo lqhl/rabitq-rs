@@ -8,6 +8,7 @@ kmeans = "2.0.1"
 rand = { version = "0.8", features = ["std"] }
 rand_distr = "0.4"
 thiserror = "1.0"
+signal-hook = { version = "0.3", features = ["iterator"] }
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["std"] }
