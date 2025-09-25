@@ -39,3 +39,9 @@
 - [x] Add runtime SIMD lane detection with an override hook so k-means can match the host's vector width without recompilation.
 - [x] Cover the new lane-selection and override logic with regression tests alongside the existing k-means suite.
 - [x] Re-run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` after the optimizations to confirm a clean workspace.
+
+## KMeans Faiss-Style Rewrite Steps
+- [x] Sketch the GEMM-based Lloyd iteration pipeline, including sampling, progressive dimension stages, and centroid reseeding strategy inspired by Faiss.
+- [x] Replace `src/kmeans.rs` with the new trainer, wiring up the GEMM assignment path, deterministic k-means++ seeding, and post-training full-dataset assignments.
+- [x] Extend the k-means unit tests to cover the sampling policy, progressive dimension schedule, and determinism of the new implementation.
+- [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` to validate the rewrite.
