@@ -75,6 +75,54 @@ fn ivf_search_recovers_identical_vectors() {
 }
 
 #[test]
+fn search_uses_query_residuals_for_estimators() {
+    let base = vec![
+        vec![10.5f32, 9.5f32],
+        vec![9.8f32, 10.2f32],
+        vec![11.2f32, 10.8f32],
+        vec![9.2f32, 9.1f32],
+    ];
+    let centroids = vec![vec![10.0f32, 10.0f32]];
+    let assignments = vec![0usize; base.len()];
+
+    let index =
+        IvfRabitqIndex::train_with_clusters(&base, &centroids, &assignments, 8, Metric::L2, 9876)
+            .expect("train index with provided clusters");
+
+    let params = SearchParams::new(1, 1);
+    let query = vec![8.828744f32, 10.015364f32];
+
+    let mut expected_id = 0usize;
+    let mut best_dist = f32::INFINITY;
+    for (idx, candidate) in base.iter().enumerate() {
+        let mut dist = 0.0f32;
+        for (a, b) in candidate.iter().zip(query.iter()) {
+            let diff = a - b;
+            dist += diff * diff;
+        }
+        if dist < best_dist {
+            best_dist = dist;
+            expected_id = idx;
+        }
+    }
+
+    assert_eq!(
+        expected_id, 3,
+        "sanity check for brute-force nearest neighbour"
+    );
+
+    let results = index.search(&query, params).expect("search index");
+    assert!(
+        !results.is_empty(),
+        "no candidates returned for shifted centroid query"
+    );
+    assert_eq!(
+        results[0].id, expected_id,
+        "search should recover the brute-force nearest neighbour"
+    );
+}
+
+#[test]
 fn fastscan_matches_naive_l2() {
     let dim = 48;
     let total = 320;

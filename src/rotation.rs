@@ -88,4 +88,26 @@ impl RandomRotator {
             output[row_idx] = acc;
         }
     }
+
+    /// Apply the inverse rotation (transpose) to a vector.
+    pub fn rotate_inverse(&self, input: &[f32]) -> Vec<f32> {
+        assert_eq!(input.len(), self.dim);
+        let mut output = vec![0.0f32; self.dim];
+        self.rotate_inverse_into(input, &mut output);
+        output
+    }
+
+    /// Apply the inverse rotation into an existing buffer.
+    pub fn rotate_inverse_into(&self, input: &[f32], output: &mut [f32]) {
+        assert_eq!(input.len(), self.dim);
+        assert_eq!(output.len(), self.dim);
+        output.fill(0.0);
+
+        for (row_idx, row) in self.matrix.chunks(self.dim).enumerate() {
+            let value = input[row_idx];
+            for (col_idx, &weight) in row.iter().enumerate() {
+                output[col_idx] += value * weight;
+            }
+        }
+    }
 }

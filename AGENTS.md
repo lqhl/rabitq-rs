@@ -49,3 +49,9 @@
 ## Performance Verification Steps
 - [ ] Run the `gist` CLI with the provided dataset to confirm the optimized k-means path completes and record its wall-clock duration.
   - Blocked: the `data/gist/*.fvecs` and `data/gist/*.ivecs` assets are not present in this workspace image, so the command exits with `No such file or directory`.
+
+## Low Recall Investigation Steps
+- [x] Reproduce the low recall behaviour on the gist dataset and inspect the IVF search path for potential sources of error.
+- [x] Add a focused regression test that fails under the current behaviour to capture the recall issue.
+- [x] Update the search implementation (and any helpers) to address the identified bug while keeping the naive verifier aligned.
+- [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, `cargo test`, and re-run the gist evaluation to confirm the fix restores recall.

@@ -135,7 +135,7 @@ impl IvfRabitqIndex {
         }
 
         let rotator = RandomRotator::new(dim, seed);
-        let rotated_data: Vec<Vec<f32>> = data.iter().map(|v| rotator.rotate(v)).collect();
+        let rotated_data: Vec<Vec<f32>> = data.iter().map(|v| rotator.rotate_inverse(v)).collect();
 
         let mut rng = StdRng::seed_from_u64(seed ^ 0x5a5a_5a5a5a5a5a5a);
         let KMeansResult {
@@ -210,9 +210,11 @@ impl IvfRabitqIndex {
         }
 
         let rotator = RandomRotator::new(dim, seed);
-        let rotated_data: Vec<Vec<f32>> = data.iter().map(|v| rotator.rotate(v)).collect();
-        let rotated_centroids: Vec<Vec<f32>> =
-            centroids.iter().map(|c| rotator.rotate(c)).collect();
+        let rotated_data: Vec<Vec<f32>> = data.iter().map(|v| rotator.rotate_inverse(v)).collect();
+        let rotated_centroids: Vec<Vec<f32>> = centroids
+            .iter()
+            .map(|c| rotator.rotate_inverse(c))
+            .collect();
 
         Self::build_from_rotated(
             dim,
@@ -310,12 +312,12 @@ impl IvfRabitqIndex {
             });
         }
 
-        let rotated_query = self.rotator.rotate(query);
+        let transformed_query = self.rotator.rotate_inverse(query);
         let mut cluster_scores: Vec<(usize, f32)> = Vec::with_capacity(self.clusters.len());
         for (cid, cluster) in self.clusters.iter().enumerate() {
             let score = match self.metric {
-                Metric::L2 => l2_distance_sqr(&rotated_query, &cluster.centroid),
-                Metric::InnerProduct => dot(&rotated_query, &cluster.centroid),
+                Metric::L2 => l2_distance_sqr(&transformed_query, &cluster.centroid),
+                Metric::InnerProduct => dot(&transformed_query, &cluster.centroid),
             };
             cluster_scores.push((cid, score));
         }
@@ -331,29 +333,39 @@ impl IvfRabitqIndex {
         }
 
         let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
-        let sum_query: f32 = rotated_query.iter().sum();
-        let query_norm: f32 = rotated_query.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let query_norm: f32 = transformed_query.iter().map(|v| v * v).sum::<f32>().sqrt();
         let c1 = -0.5f32;
         let binary_scale = (1 << self.ex_bits) as f32;
         let cb = -((1 << self.ex_bits) as f32 - 0.5);
 
         for &(cid, _) in cluster_scores.iter().take(nprobe) {
             let cluster = &self.clusters[cid];
-            let centroid_dist = l2_distance_sqr(&rotated_query, &cluster.centroid);
-            let dot_query_centroid = dot(&rotated_query, &cluster.centroid);
+            let centroid_dist = l2_distance_sqr(&transformed_query, &cluster.centroid);
+            let dot_query_centroid = dot(&transformed_query, &cluster.centroid);
             let g_add = match self.metric {
                 Metric::L2 => centroid_dist,
                 Metric::InnerProduct => -dot_query_centroid,
             };
             let centroid_norm = centroid_dist.sqrt();
             let g_error = centroid_norm;
+            let sum_residual: f32 = transformed_query
+                .iter()
+                .zip(cluster.centroid.iter())
+                .map(|(q, c)| q - c)
+                .sum();
 
             for (local_idx, quantized) in cluster.vectors.iter().enumerate() {
                 let mut binary_dot = 0.0f32;
-                for (&bit, &q_val) in quantized.binary_code.iter().zip(rotated_query.iter()) {
-                    binary_dot += (bit as f32) * q_val;
+                for ((&bit, &q_val), &cent_val) in quantized
+                    .binary_code
+                    .iter()
+                    .zip(transformed_query.iter())
+                    .zip(cluster.centroid.iter())
+                {
+                    let residual = q_val - cent_val;
+                    binary_dot += (bit as f32) * residual;
                 }
-                let binary_term = binary_dot + c1 * sum_query;
+                let binary_term = binary_dot + c1 * sum_residual;
                 let est_distance = quantized.f_add + g_add + quantized.f_rescale * binary_term;
                 let mut lower_bound = est_distance - quantized.f_error * g_error;
                 let safe_bound = match self.metric {
@@ -401,10 +413,16 @@ impl IvfRabitqIndex {
 
                 if self.ex_bits > 0 {
                     let mut ex_dot = 0.0f32;
-                    for (&code, &q_val) in quantized.ex_code.iter().zip(rotated_query.iter()) {
-                        ex_dot += (code as f32) * q_val;
+                    for ((&code, &q_val), &cent_val) in quantized
+                        .ex_code
+                        .iter()
+                        .zip(transformed_query.iter())
+                        .zip(cluster.centroid.iter())
+                    {
+                        let residual = q_val - cent_val;
+                        ex_dot += (code as f32) * residual;
                     }
-                    let total_term = binary_scale * binary_dot + ex_dot + cb * sum_query;
+                    let total_term = binary_scale * binary_dot + ex_dot + cb * sum_residual;
                     distance = quantized.f_add_ex + g_add + quantized.f_rescale_ex * total_term;
                     score = match self.metric {
                         Metric::L2 => distance,
@@ -484,12 +502,12 @@ impl IvfRabitqIndex {
             });
         }
 
-        let rotated_query = self.rotator.rotate(query);
+        let transformed_query = self.rotator.rotate_inverse(query);
         let mut cluster_scores: Vec<(usize, f32)> = Vec::with_capacity(self.clusters.len());
         for (cid, cluster) in self.clusters.iter().enumerate() {
             let score = match self.metric {
-                Metric::L2 => l2_distance_sqr(&rotated_query, &cluster.centroid),
-                Metric::InnerProduct => dot(&rotated_query, &cluster.centroid),
+                Metric::L2 => l2_distance_sqr(&transformed_query, &cluster.centroid),
+                Metric::InnerProduct => dot(&transformed_query, &cluster.centroid),
             };
             cluster_scores.push((cid, score));
         }
@@ -501,31 +519,47 @@ impl IvfRabitqIndex {
 
         let nprobe = params.nprobe.max(1).min(self.clusters.len());
         let mut candidates = Vec::new();
-        let sum_query: f32 = rotated_query.iter().sum();
         let c1 = -0.5f32;
         let binary_scale = (1 << self.ex_bits) as f32;
         let cb = -((1 << self.ex_bits) as f32 - 0.5);
         for &(cid, _) in cluster_scores.iter().take(nprobe) {
             let cluster = &self.clusters[cid];
-            let centroid_dist = l2_distance_sqr(&rotated_query, &cluster.centroid);
-            let dot_query_centroid = dot(&rotated_query, &cluster.centroid);
+            let centroid_dist = l2_distance_sqr(&transformed_query, &cluster.centroid);
+            let dot_query_centroid = dot(&transformed_query, &cluster.centroid);
             let g_add = match self.metric {
                 Metric::L2 => centroid_dist,
                 Metric::InnerProduct => -dot_query_centroid,
             };
+            let sum_residual: f32 = transformed_query
+                .iter()
+                .zip(cluster.centroid.iter())
+                .map(|(q, c)| q - c)
+                .sum();
             for (local_idx, quantized) in cluster.vectors.iter().enumerate() {
                 let mut binary_dot = 0.0f32;
-                for (&bit, &q_val) in quantized.binary_code.iter().zip(rotated_query.iter()) {
-                    binary_dot += (bit as f32) * q_val;
+                for ((&bit, &q_val), &cent_val) in quantized
+                    .binary_code
+                    .iter()
+                    .zip(transformed_query.iter())
+                    .zip(cluster.centroid.iter())
+                {
+                    let residual = q_val - cent_val;
+                    binary_dot += (bit as f32) * residual;
                 }
-                let binary_term = binary_dot + c1 * sum_query;
+                let binary_term = binary_dot + c1 * sum_residual;
                 let mut distance = quantized.f_add + g_add + quantized.f_rescale * binary_term;
                 if self.ex_bits > 0 {
                     let mut ex_dot = 0.0f32;
-                    for (&code, &q_val) in quantized.ex_code.iter().zip(rotated_query.iter()) {
-                        ex_dot += (code as f32) * q_val;
+                    for ((&code, &q_val), &cent_val) in quantized
+                        .ex_code
+                        .iter()
+                        .zip(transformed_query.iter())
+                        .zip(cluster.centroid.iter())
+                    {
+                        let residual = q_val - cent_val;
+                        ex_dot += (code as f32) * residual;
                     }
-                    let total_term = binary_scale * binary_dot + ex_dot + cb * sum_query;
+                    let total_term = binary_scale * binary_dot + ex_dot + cb * sum_residual;
                     distance = quantized.f_add_ex + g_add + quantized.f_rescale_ex * total_term;
                 }
                 if !distance.is_finite() {
