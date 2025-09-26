@@ -1,7 +1,14 @@
 [package]
-name = "rabitq"
+name = "rabitq-rs"
 version = "0.1.0"
 edition = "2021"
+description = "Rust implementation of the RaBitQ quantization scheme with IVF search tooling"
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/lqhl/rabitq"
+documentation = "https://docs.rs/rabitq-rs"
+keywords = ["ann", "vector-search", "quantization", "ivf", "similarity"]
+categories = ["algorithms", "science"]
 
 [dependencies]
 matrixmultiply = "0.3"
@@ -15,5 +22,5 @@ signal-hook = { version = "0.3", features = ["iterator"] }
 rand = { version = "0.8", features = ["std"] }
 
 [lib]
-name = "rabitq"
+name = "rabitq_rs"
 path = "src/lib.rs"

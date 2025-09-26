@@ -116,7 +116,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rabitq"
+name = "rabitq-rs"
 version = "0.1.0"
 dependencies = [
  "matrixmultiply",
