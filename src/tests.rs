@@ -8,7 +8,9 @@ use crate::io::{
 };
 use crate::ivf::{IvfRabitqIndex, SearchParams};
 use crate::kmeans::run_kmeans;
+use crate::math::l2_distance_sqr;
 use crate::quantizer::{quantize_with_centroid, reconstruct_into};
+use crate::rotation::RandomRotator;
 use crate::Metric;
 
 fn random_vector(dim: usize, rng: &mut StdRng) -> Vec<f32> {
@@ -75,7 +77,7 @@ fn ivf_search_recovers_identical_vectors() {
 }
 
 #[test]
-fn search_uses_query_residuals_for_estimators() {
+fn search_recovers_shifted_centroid_neighbour() {
     let base = vec![
         vec![10.5f32, 9.5f32],
         vec![9.8f32, 10.2f32],
@@ -90,7 +92,7 @@ fn search_uses_query_residuals_for_estimators() {
             .expect("train index with provided clusters");
 
     let params = SearchParams::new(1, 1);
-    let query = vec![8.828744f32, 10.015364f32];
+    let query = vec![9.0f32, 9.0f32];
 
     let mut expected_id = 0usize;
     let mut best_dist = f32::INFINITY;
@@ -108,7 +110,7 @@ fn search_uses_query_residuals_for_estimators() {
 
     assert_eq!(
         expected_id, 3,
-        "sanity check for brute-force nearest neighbour"
+        "brute-force nearest neighbour should be id 3"
     );
 
     let results = index.search(&query, params).expect("search index");
@@ -120,6 +122,175 @@ fn search_uses_query_residuals_for_estimators() {
         results[0].id, expected_id,
         "search should recover the brute-force nearest neighbour"
     );
+}
+
+#[test]
+fn search_estimator_uses_query_coordinates() {
+    let base = vec![
+        vec![10.5f32, 9.5f32],
+        vec![9.8f32, 10.2f32],
+        vec![11.2f32, 10.8f32],
+        vec![9.2f32, 9.1f32],
+    ];
+    let centroids = vec![vec![10.0f32, 10.0f32]];
+    let assignments = vec![0usize; base.len()];
+    let total_bits = 8;
+
+    let index = IvfRabitqIndex::train_with_clusters(
+        &base,
+        &centroids,
+        &assignments,
+        total_bits,
+        Metric::L2,
+        9876,
+    )
+    .expect("train index with provided clusters");
+
+    let params = SearchParams::new(2, 1);
+    let query = vec![9.0f32, 9.0f32];
+
+    let results = index.search(&query, params).expect("search index");
+    assert!(
+        !results.is_empty(),
+        "no candidates returned for estimator check"
+    );
+    let best_id = results[0].id;
+
+    let rotator = RandomRotator::new(query.len(), 9876);
+    let rotated_query = rotator.rotate_inverse(&query);
+    let rotated_centroid = rotator.rotate_inverse(&centroids[0]);
+    let rotated_base = rotator.rotate_inverse(&base[best_id]);
+    let quantized =
+        quantize_with_centroid(&rotated_base, &rotated_centroid, total_bits, Metric::L2);
+
+    let centroid_dist = l2_distance_sqr(&rotated_query, &rotated_centroid);
+    let g_add = centroid_dist;
+    let c1 = -0.5f32;
+    let ex_bits = total_bits - 1;
+    let binary_scale = (1 << ex_bits) as f32;
+    let cb = -((1 << ex_bits) as f32 - 0.5);
+    let sum_query: f32 = rotated_query.iter().copied().sum();
+    let binary_dot_query: f32 = quantized
+        .binary_code
+        .iter()
+        .zip(rotated_query.iter())
+        .map(|(&bit, &q)| (bit as f32) * q)
+        .sum();
+    let binary_term_query = binary_dot_query + c1 * sum_query;
+    let mut distance_query = quantized.f_add + g_add + quantized.f_rescale * binary_term_query;
+    if ex_bits > 0 {
+        let ex_dot_query: f32 = quantized
+            .ex_code
+            .iter()
+            .zip(rotated_query.iter())
+            .map(|(&code, &q)| (code as f32) * q)
+            .sum();
+        distance_query = quantized.f_add_ex
+            + g_add
+            + quantized.f_rescale_ex
+                * (binary_scale * binary_dot_query + ex_dot_query + cb * sum_query);
+    }
+
+    let residuals: Vec<f32> = rotated_query
+        .iter()
+        .zip(rotated_centroid.iter())
+        .map(|(&q, &c)| q - c)
+        .collect();
+    let sum_residual: f32 = residuals.iter().copied().sum();
+    let binary_dot_residual: f32 = quantized
+        .binary_code
+        .iter()
+        .zip(residuals.iter())
+        .map(|(&bit, &r)| (bit as f32) * r)
+        .sum();
+    let binary_term_residual = binary_dot_residual + c1 * sum_residual;
+    let mut distance_residual =
+        quantized.f_add + g_add + quantized.f_rescale * binary_term_residual;
+    if ex_bits > 0 {
+        let ex_dot_residual: f32 = quantized
+            .ex_code
+            .iter()
+            .zip(residuals.iter())
+            .map(|(&code, &r)| (code as f32) * r)
+            .sum();
+        distance_residual = quantized.f_add_ex
+            + g_add
+            + quantized.f_rescale_ex
+                * (binary_scale * binary_dot_residual + ex_dot_residual + cb * sum_residual);
+    }
+
+    let returned_distance = results
+        .iter()
+        .find(|res| res.id == best_id)
+        .map(|res| res.score)
+        .expect("distance for best id");
+
+    assert!(
+        (returned_distance - distance_query).abs() < 1e-3,
+        "search should evaluate query-based estimator",
+    );
+    assert!(
+        (returned_distance - distance_residual).abs() > 1e-4,
+        "search distance should diverge from residual-based estimator",
+    );
+}
+
+#[test]
+fn noisy_queries_recover_original_vectors() {
+    let dim = 32;
+    let total = 192;
+    let mut rng = StdRng::seed_from_u64(314159);
+    let normal = rand_distr::Normal::new(0.0, 0.05).expect("create normal distribution");
+    let mut base = Vec::with_capacity(total);
+    for _ in 0..total {
+        base.push(random_vector(dim, &mut rng));
+    }
+
+    let index = IvfRabitqIndex::train(&base, 24, 7, Metric::L2, 1618)
+        .expect("train index from random data");
+    let params = SearchParams::new(1, 24);
+
+    for (idx, vector) in base.iter().enumerate().take(24) {
+        let mut query = vector.clone();
+        for value in query.iter_mut() {
+            *value += rng.sample::<f32, _>(normal);
+        }
+
+        let brute_force = base
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                let dist_a = a
+                    .iter()
+                    .zip(query.iter())
+                    .map(|(x, y)| {
+                        let diff = x - y;
+                        diff * diff
+                    })
+                    .sum::<f32>();
+                let dist_b = b
+                    .iter()
+                    .zip(query.iter())
+                    .map(|(x, y)| {
+                        let diff = x - y;
+                        diff * diff
+                    })
+                    .sum::<f32>();
+                dist_a.total_cmp(&dist_b)
+            })
+            .map(|(best_idx, _)| best_idx)
+            .expect("brute-force neighbour");
+
+        let results = index.search(&query, params).expect("fastscan search");
+        assert!(
+            !results.is_empty(),
+            "search returned no results for noisy query {idx}",
+        );
+        assert_eq!(
+            results[0].id, brute_force,
+            "fastscan should agree with brute-force for noisy query {idx}",
+        );
+    }
 }
 
 #[test]

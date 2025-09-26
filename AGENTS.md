@@ -55,3 +55,8 @@
 - [x] Add a focused regression test that fails under the current behaviour to capture the recall issue.
 - [x] Update the search implementation (and any helpers) to address the identified bug while keeping the naive verifier aligned.
 - [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, `cargo test`, and re-run the gist evaluation to confirm the fix restores recall.
+
+## Recall Regression Follow-up Steps
+- [x] Restore the fastscan estimator to use query coordinates rather than query-centroid residuals.
+- [x] Add unit tests that compare the computed estimator against a reference implementation and cover noisy query retrieval.
+- [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` to validate the fix.
