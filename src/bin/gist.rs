@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::process;
 use std::time::{Duration, Instant};
 
-use rabitq::io::{read_fvecs, read_groundtruth, read_ids};
-use rabitq::ivf::{IvfRabitqIndex, SearchParams};
-use rabitq::Metric;
+use rabitq_rs::io::{read_fvecs, read_groundtruth, read_ids};
+use rabitq_rs::ivf::{IvfRabitqIndex, SearchParams};
+use rabitq_rs::Metric;
 
 type CliResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -390,7 +390,7 @@ fn install_signal_handlers() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::Config;
-    use rabitq::Metric;
+    use rabitq_rs::Metric;
 
     #[test]
     fn parse_config_with_precomputed_clusters() {

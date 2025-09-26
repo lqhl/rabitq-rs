@@ -49,3 +49,21 @@
 ## Performance Verification Steps
 - [ ] Run the `gist` CLI with the provided dataset to confirm the optimized k-means path completes and record its wall-clock duration.
   - Blocked: the `data/gist/*.fvecs` and `data/gist/*.ivecs` assets are not present in this workspace image, so the command exits with `No such file or directory`.
+
+## Publish Crate Steps
+- [x] Audit the crate metadata in `Cargo.toml` and populate the fields required for crates.io publication.
+- [x] Document the end-to-end publishing workflow (including `cargo login`, `cargo package`, and `cargo publish`) in the README.
+- [x] Verify the crate packages successfully by running `cargo package` locally.
+- [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` to ensure the workspace is clean before publishing.
+
+## Crate Rename 2025 Steps
+- [x] Select an available crates.io identifier (`rabitq_ann`) to avoid the already-claimed `rabitq` name.
+- [x] Update `Cargo.toml`, the library target, and the CLI imports to use the new crate identifier.
+- [x] Align the README and publishing docs with the `rabitq_ann` package branding.
+- [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` after the rename to validate the workspace.
+
+## Crate Rename Follow-up 2025 Steps
+- [x] Document the rename follow-up plan in `AGENTS.md`, including metadata, code, and docs updates.
+- [x] Change the crate package identifier to `rabitq-rs` in `Cargo.toml` and refresh the lockfile.
+- [x] Update all library imports, CLI references, and user-facing documentation to use `rabitq_rs` as the crate path.
+- [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` to validate the rename.
