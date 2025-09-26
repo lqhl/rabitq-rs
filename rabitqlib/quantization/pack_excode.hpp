@@ -1,6 +1,12 @@
 #pragma once
 
+#include "utils/simd_support.hpp"
+
+#if RABITQ_TARGET_AVX512
 #include <immintrin.h>
+#elif RABITQ_TARGET_NEON
+#include <arm_neon.h>
+#endif
 #include <omp.h>
 
 #include <cmath>
@@ -10,8 +16,151 @@
 #include <iostream>
 
 namespace rabitqlib::quant::rabitq_impl::ex_bits {
+namespace detail {
+
+inline void packing_1bit_scalar(const uint8_t* o_raw, uint8_t* o_compact, size_t dim) {
+    for (size_t j = 0; j < dim; j += 16) {
+        uint16_t code = 0;
+        for (size_t i = 0; i < 16; ++i) {
+            code |= static_cast<uint16_t>(o_raw[i] & 0x1) << i;
+        }
+        std::memcpy(o_compact, &code, sizeof(uint16_t));
+        o_raw += 16;
+        o_compact += 2;
+    }
+}
+
+inline void packing_2bit_scalar(const uint8_t* o_raw, uint8_t* o_compact, size_t dim) {
+    for (size_t j = 0; j < dim; j += 16) {
+        for (size_t lane = 0; lane < 4; ++lane) {
+            uint8_t packed = 0;
+            for (size_t offset = 0; offset < 4; ++offset) {
+                size_t idx = lane + offset * 4;
+                packed |= static_cast<uint8_t>(o_raw[idx] & 0x3) << (offset * 2);
+            }
+            o_compact[lane] = packed;
+        }
+        o_raw += 16;
+        o_compact += 4;
+    }
+}
+
+inline void packing_3bit_scalar(const uint8_t* o_raw, uint8_t* o_compact, size_t dim) {
+    for (size_t d = 0; d < dim; d += 64) {
+        for (size_t lane = 0; lane < 16; ++lane) {
+            uint8_t packed = 0;
+            for (size_t group = 0; group < 4; ++group) {
+                size_t idx = group * 16 + lane;
+                packed |= static_cast<uint8_t>(o_raw[idx] & 0x3) << (group * 2);
+            }
+            o_compact[lane] = packed;
+        }
+        o_compact += 16;
+
+        uint64_t top_bits = 0;
+        for (size_t idx = 0; idx < 64; ++idx) {
+            top_bits |= static_cast<uint64_t>((o_raw[idx] >> 2) & 0x1) << idx;
+        }
+        std::memcpy(o_compact, &top_bits, sizeof(uint64_t));
+
+        o_raw += 64;
+        o_compact += 8;
+    }
+}
+
+inline void packing_4bit_scalar(const uint8_t* o_raw, uint8_t* o_compact, size_t dim) {
+    for (size_t j = 0; j < dim; j += 16) {
+        for (size_t lane = 0; lane < 8; ++lane) {
+            uint8_t lo = static_cast<uint8_t>(o_raw[lane] & 0xF);
+            uint8_t hi = static_cast<uint8_t>(o_raw[lane + 8] & 0xF);
+            o_compact[lane] = static_cast<uint8_t>(lo | (hi << 4));
+        }
+        o_raw += 16;
+        o_compact += 8;
+    }
+}
+
+inline void packing_5bit_scalar(const uint8_t* o_raw, uint8_t* o_compact, size_t dim) {
+    for (size_t j = 0; j < dim; j += 64) {
+        for (size_t lane = 0; lane < 16; ++lane) {
+            uint8_t lo = static_cast<uint8_t>(o_raw[lane] & 0xF);
+            uint8_t hi = static_cast<uint8_t>(o_raw[lane + 16] & 0xF);
+            o_compact[lane] = static_cast<uint8_t>(lo | (hi << 4));
+        }
+        for (size_t lane = 0; lane < 16; ++lane) {
+            uint8_t lo = static_cast<uint8_t>(o_raw[32 + lane] & 0xF);
+            uint8_t hi = static_cast<uint8_t>(o_raw[48 + lane] & 0xF);
+            o_compact[16 + lane] = static_cast<uint8_t>(lo | (hi << 4));
+        }
+        o_compact += 32;
+
+        uint64_t top_bits = 0;
+        for (size_t idx = 0; idx < 64; ++idx) {
+            top_bits |= static_cast<uint64_t>((o_raw[idx] >> 4) & 0x1) << idx;
+        }
+        std::memcpy(o_compact, &top_bits, sizeof(uint64_t));
+
+        o_raw += 64;
+        o_compact += 8;
+    }
+}
+
+inline void packing_6bit_scalar(const uint8_t* o_raw, uint8_t* o_compact, size_t dim) {
+    for (size_t j = 0; j < dim; j += 16) {
+        for (size_t lane = 0; lane < 8; ++lane) {
+            uint8_t lo = static_cast<uint8_t>(o_raw[lane] & 0xF);
+            uint8_t hi = static_cast<uint8_t>(o_raw[lane + 8] & 0xF);
+            o_compact[lane] = static_cast<uint8_t>(lo | (hi << 4));
+        }
+        o_compact += 8;
+
+        for (size_t lane = 0; lane < 4; ++lane) {
+            uint8_t packed = 0;
+            for (size_t group = 0; group < 4; ++group) {
+                size_t idx = lane + group * 4;
+                packed |= static_cast<uint8_t>((o_raw[idx] >> 4) & 0x3) << (group * 2);
+            }
+            o_compact[lane] = packed;
+        }
+
+        o_raw += 16;
+        o_compact += 4;
+    }
+}
+
+inline void packing_7bit_scalar(const uint8_t* o_raw, uint8_t* o_compact, size_t dim) {
+    for (size_t d = 0; d < dim; d += 64) {
+        for (size_t lane = 0; lane < 16; ++lane) {
+            uint8_t base = static_cast<uint8_t>(o_raw[lane] & 0x3F);
+            uint8_t extra = static_cast<uint8_t>(o_raw[48 + lane] & 0x3);
+            o_compact[lane] = static_cast<uint8_t>(base | (extra << 6));
+        }
+        for (size_t lane = 0; lane < 16; ++lane) {
+            uint8_t base = static_cast<uint8_t>(o_raw[16 + lane] & 0x3F);
+            uint8_t extra = static_cast<uint8_t>((o_raw[48 + lane] >> 2) & 0x3);
+            o_compact[16 + lane] = static_cast<uint8_t>(base | (extra << 6));
+        }
+        for (size_t lane = 0; lane < 16; ++lane) {
+            uint8_t base = static_cast<uint8_t>(o_raw[32 + lane] & 0x3F);
+            uint8_t extra = static_cast<uint8_t>((o_raw[48 + lane] >> 4) & 0x3);
+            o_compact[32 + lane] = static_cast<uint8_t>(base | (extra << 6));
+        }
+        o_compact += 48;
+
+        uint64_t top_bits = 0;
+        for (size_t idx = 0; idx < 64; ++idx) {
+            top_bits |= static_cast<uint64_t>((o_raw[idx] >> 6) & 0x1) << idx;
+        }
+        std::memcpy(o_compact, &top_bits, sizeof(uint64_t));
+
+        o_raw += 64;
+        o_compact += 8;
+    }
+}
+
+}  // namespace detail
 inline void packing_1bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t dim) {
-#if defined(__AVX512F__)
+#if RABITQ_TARGET_AVX512
     // ! require dim % 16 == 0
     for (size_t j = 0; j < dim; j += 16) {
         uint16_t code = 0;
@@ -24,13 +173,12 @@ inline void packing_1bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t
         o_compact += 2;
     }
 #else
-    std::cerr << "Current only support AVX512F only for packing excode\n" << std::flush;
-    exit(1);
+    detail::packing_1bit_scalar(o_raw, o_compact, dim);
 #endif
 }
 
 inline void packing_2bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t dim) {
-#if defined(__AVX512F__)
+#if RABITQ_TARGET_AVX512
     // ! require dim % 16 == 0
     for (size_t j = 0; j < dim; j += 16) {
         // pack 16 2-bit codes into int32
@@ -48,13 +196,12 @@ inline void packing_2bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t
         o_compact += 4;
     }
 #else
-    std::cerr << "Current only support AVX512F only for packing excode\n" << std::flush;
-    exit(1);
+    detail::packing_2bit_scalar(o_raw, o_compact, dim);
 #endif
 }
 
 inline void packing_3bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t dim) {
-#if defined(__AVX512F__)
+#if RABITQ_TARGET_AVX512
     // ! require dim % 64 == 0
     const __m128i mask = _mm_set1_epi8(0b11);
     for (size_t d = 0; d < dim; d += 64) {
@@ -96,15 +243,14 @@ inline void packing_3bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t
         o_compact += 8;
     }
 #else
-    std::cerr << "Current only support AVX512F only for packing excode\n" << std::flush;
-    exit(1);
+    detail::packing_3bit_scalar(o_raw, o_compact, dim);
 #endif
 }
 
 inline void packing_4bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t dim) {
 // although this part only requries SSE, computing inner product for this orgnization
 // requires AVX512F, similar for remaining functions
-#if defined(__AVX512F__)
+#if RABITQ_TARGET_AVX512
     // ! require dim % 16 == 0
     for (size_t j = 0; j < dim; j += 16) {
         // pack 16 4-bit codes into uint64
@@ -121,13 +267,12 @@ inline void packing_4bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t
         o_compact += 8;
     }
 #else
-    std::cerr << "Current only support AVX512F only for packing excode\n" << std::flush;
-    exit(1);
+    detail::packing_4bit_scalar(o_raw, o_compact, dim);
 #endif
 }
 
 inline void packing_5bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t dim) {
-#if defined(__AVX512F__)
+#if RABITQ_TARGET_AVX512
     // ! require dim % 64 == 0
     const __m128i mask = _mm_set1_epi8(0b1111);
     for (size_t j = 0; j < dim; j += 64) {
@@ -166,13 +311,12 @@ inline void packing_5bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t
         o_compact += 8;
     }
 #else
-    std::cerr << "Current only support AVX512F only for packing excode\n" << std::flush;
-    exit(1);
+    detail::packing_5bit_scalar(o_raw, o_compact, dim);
 #endif
 }
 
 inline void packing_6bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t dim) {
-#if defined(__AVX512F__)
+#if RABITQ_TARGET_AVX512
     constexpr int64_t kMask4 = 0x0f0f0f0f0f0f0f0f;
     constexpr int32_t kMask2 = 0x30303030;
     for (size_t j = 0; j < dim; j += 16) {
@@ -199,13 +343,12 @@ inline void packing_6bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t
         o_compact += 4;
     }
 #else
-    std::cerr << "Current only support AVX512F only for packing excode\n" << std::flush;
-    exit(1);
+    detail::packing_6bit_scalar(o_raw, o_compact, dim);
 #endif
 }
 
 inline void packing_7bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t dim) {
-#if defined(__AVX512F__)
+#if RABITQ_TARGET_AVX512
     // for vec00 to vec47, split code into 6 + 1
     // for vec48 to vec63, split code into 2 + 2 + 2 + 1
     const __m128i mask2 = _mm_set1_epi8(0b11000000);
@@ -250,8 +393,7 @@ inline void packing_7bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t
         o_raw += 64;
     }
 #else
-    std::cerr << "Current only support AVX512F only for packing excode\n" << std::flush;
-    exit(1);
+    detail::packing_7bit_scalar(o_raw, o_compact, dim);
 #endif
 }
 

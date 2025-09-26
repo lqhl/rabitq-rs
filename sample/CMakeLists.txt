@@ -8,3 +8,9 @@ add_executable(ivf_rabitq_querying ivf_rabitq_querying.cpp)
 
 add_executable(hnsw_rabitq_indexing hnsw_rabitq_indexing.cpp)
 add_executable(hnsw_rabitq_querying hnsw_rabitq_querying.cpp)
+
+add_executable(pack_excode_scalar_test tests/pack_excode_scalar_test.cpp)
+add_test(
+    NAME pack_excode_scalar_test
+    COMMAND ${PROJECT_SOURCE_DIR}/bin/pack_excode_scalar_test
+)

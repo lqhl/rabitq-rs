@@ -49,3 +49,8 @@
 ## Performance Verification Steps
 - [ ] Run the `gist` CLI with the provided dataset to confirm the optimized k-means path completes and record its wall-clock duration.
   - Blocked: the `data/gist/*.fvecs` and `data/gist/*.ivecs` assets are not present in this workspace image, so the command exits with `No such file or directory`.
+
+## Mac M1 Compatibility Steps
+- [x] Introduce architecture-detection macros so SIMD code paths can be toggled per CPU family.
+- [x] Provide Arm-friendly fallbacks for the RaBitQ ex-code packing routines while keeping the Intel AVX-512 path intact.
+- [x] Back the new architecture switches with regression coverage that exercises the non-AVX code path.
