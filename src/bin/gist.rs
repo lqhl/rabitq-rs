@@ -63,7 +63,12 @@ fn run(config: Config) -> CliResult<()> {
     println!("Loaded {} base vectors with dimension {}.", base.len(), dim);
 
     let build_start = Instant::now();
-    let (index, clusters) = if let (Some(centroids_path), Some(assignments_path)) =
+    let mut loaded_from_disk = false;
+    let index = if let Some(load_path) = &config.load_index {
+        println!("Loading IVF+RaBitQ index from {}...", load_path.display());
+        loaded_from_disk = true;
+        IvfRabitqIndex::load_from_path(load_path)?
+    } else if let (Some(centroids_path), Some(assignments_path)) =
         (&config.centroids, &config.assignments)
     {
         println!("Loading centroids from {}...", centroids_path.display());
@@ -100,15 +105,14 @@ fn run(config: Config) -> CliResult<()> {
 
         println!("Loaded {} cluster assignments.", assignments.len());
 
-        let index = IvfRabitqIndex::train_with_clusters(
+        IvfRabitqIndex::train_with_clusters(
             &base,
             &centroids,
             &assignments,
             config.bits,
             config.metric,
             config.seed,
-        )?;
-        (index, centroids.len())
+        )?
     } else {
         let nlist = config
             .nlist
@@ -117,16 +121,26 @@ fn run(config: Config) -> CliResult<()> {
             "Clustering base vectors into {} lists with the built-in Rust trainer...",
             nlist
         );
-        let index = IvfRabitqIndex::train(&base, nlist, config.bits, config.metric, config.seed)?;
-        (index, nlist)
+        IvfRabitqIndex::train(&base, nlist, config.bits, config.metric, config.seed)?
     };
     let build_time = build_start.elapsed();
 
+    if let Some(save_path) = &config.save_index {
+        println!("Persisting index to {}...", save_path.display());
+        index.save_to_path(save_path)?;
+    }
+
+    let verb = if loaded_from_disk {
+        "Loaded"
+    } else {
+        "Constructed"
+    };
     println!(
-        "Constructed IVF+RaBitQ index in {:.2?} ({} vectors across {} clusters).",
+        "{} IVF+RaBitQ index in {:.2?} ({} vectors across {} clusters).",
+        verb,
         build_time,
         index.len(),
-        clusters
+        index.cluster_count()
     );
 
     if let (Some(query_path), Some(gt_path)) = (&config.queries, &config.groundtruth) {
@@ -232,6 +246,8 @@ struct Config {
     max_base: Option<usize>,
     max_queries: Option<usize>,
     seed: u64,
+    load_index: Option<PathBuf>,
+    save_index: Option<PathBuf>,
 }
 
 impl Config {
@@ -249,6 +265,8 @@ impl Config {
         let mut max_base = None;
         let mut max_queries = None;
         let mut seed = 0x5a5a_1234_u64;
+        let mut load_index = None;
+        let mut save_index = None;
 
         let mut iter = args.into_iter();
         while let Some(arg) = iter.next() {
@@ -269,6 +287,8 @@ impl Config {
                 "--max-base" => max_base = Some(next_usize(&mut iter, &arg)?),
                 "--max-queries" => max_queries = Some(next_usize(&mut iter, &arg)?),
                 "--seed" => seed = next_u64(&mut iter, &arg)?,
+                "--load-index" => load_index = Some(next_path(&mut iter, &arg)?),
+                "--save-index" => save_index = Some(next_path(&mut iter, &arg)?),
                 other => {
                     return Err(format!("unrecognised argument: {other}"));
                 }
@@ -276,10 +296,19 @@ impl Config {
         }
 
         let base = base.ok_or_else(|| "missing required argument --base".to_string())?;
-        let bits = bits.ok_or_else(|| "missing required argument --bits".to_string())?;
+        let bits = match (load_index.as_ref(), bits) {
+            (Some(_), Some(value)) => value,
+            (Some(_), None) => 0,
+            (None, Some(value)) => value,
+            (None, None) => return Err("missing required argument --bits".to_string()),
+        };
 
-        if bits == 0 || bits > 16 {
-            return Err("--bits must be between 1 and 16".to_string());
+        if load_index.is_none() {
+            if bits == 0 || bits > 16 {
+                return Err("--bits must be between 1 and 16".to_string());
+            }
+        } else if bits != 0 && (bits > 16) {
+            return Err("--bits must be between 1 and 16 when provided".to_string());
         }
         if top_k == 0 {
             return Err("--top-k must be positive".to_string());
@@ -293,7 +322,14 @@ impl Config {
         if centroids.is_some() ^ assignments.is_some() {
             return Err("--centroids and --assignments must be provided together".to_string());
         }
-        if centroids.is_none() && assignments.is_none() && nlist.is_none() {
+        if load_index.is_some() {
+            if centroids.is_some() || assignments.is_some() || nlist.is_some() {
+                return Err(
+                    "--load-index cannot be combined with training arguments (--nlist/--centroids/--assignments)"
+                        .to_string(),
+                );
+            }
+        } else if centroids.is_none() && assignments.is_none() && nlist.is_none() {
             return Err(
                 "provide either --nlist for built-in training or both --centroids/--assignments"
                     .to_string(),
@@ -314,6 +350,8 @@ impl Config {
             max_base,
             max_queries,
             seed,
+            load_index,
+            save_index,
         })
     }
 }
@@ -353,7 +391,9 @@ fn print_usage() {
     eprintln!("Usage: cargo run --bin gist -- [OPTIONS]");
     eprintln!("\nRequired arguments:");
     eprintln!("    --base <path>         Path to gist_base.fvecs");
-    eprintln!("    --bits <value>        Total number of quantisation bits (1-16)");
+    eprintln!(
+        "    --bits <value>        Total number of quantisation bits (1-16, required unless --load-index)"
+    );
     eprintln!("\nChoose one of the following training modes:");
     eprintln!("    --nlist <value>       Number of IVF clusters to learn with the Rust trainer");
     eprintln!("    --centroids <path>    Path to centroid .fvecs file");
@@ -367,6 +407,8 @@ fn print_usage() {
     eprintln!("    --max-base <value>    Limit the number of base vectors loaded");
     eprintln!("    --max-queries <value> Limit the number of query vectors loaded");
     eprintln!("    --seed <value>        Random seed for the rotator");
+    eprintln!("    --save-index <path>   Persist the trained index to disk");
+    eprintln!("    --load-index <path>   Load a persisted index instead of retraining");
 }
 
 fn install_signal_handlers() -> std::io::Result<()> {
@@ -419,6 +461,8 @@ mod tests {
         assert_eq!(config.nlist, None);
         assert_eq!(config.bits, 7);
         assert_eq!(config.metric, Metric::InnerProduct);
+        assert!(config.load_index.is_none());
+        assert!(config.save_index.is_none());
     }
 
     #[test]
@@ -440,6 +484,8 @@ mod tests {
         assert_eq!(config.nlist, Some(128));
         assert_eq!(config.bits, 6);
         assert_eq!(config.top_k, 20);
+        assert!(config.load_index.is_none());
+        assert!(config.save_index.is_none());
     }
 
     #[test]
@@ -466,5 +512,58 @@ mod tests {
         ];
         let err = Config::parse(args).expect_err("missing assignments should error");
         assert!(err.contains("--centroids and --assignments must be provided together"));
+    }
+
+    #[test]
+    fn parse_config_accepts_load_index_without_bits() {
+        let args = vec![
+            "--base".into(),
+            "base.fvecs".into(),
+            "--bits".into(),
+            "7".into(),
+            "--load-index".into(),
+            "index.bin".into(),
+        ];
+        let config = Config::parse(args).expect("parse config");
+        assert_eq!(config.bits, 7);
+        assert_eq!(
+            config.load_index,
+            Some(std::path::PathBuf::from("index.bin"))
+        );
+    }
+
+    #[test]
+    fn parse_config_allows_load_index_without_bits_flag() {
+        let args = vec![
+            "--base".into(),
+            "base.fvecs".into(),
+            "--load-index".into(),
+            "index.bin".into(),
+            "--top-k".into(),
+            "15".into(),
+        ];
+        let config = Config::parse(args).expect("parse config");
+        assert_eq!(config.bits, 0);
+        assert_eq!(config.top_k, 15);
+        assert_eq!(
+            config.load_index,
+            Some(std::path::PathBuf::from("index.bin"))
+        );
+    }
+
+    #[test]
+    fn parse_config_rejects_load_index_with_training_args() {
+        let args = vec![
+            "--base".into(),
+            "base.fvecs".into(),
+            "--load-index".into(),
+            "index.bin".into(),
+            "--bits".into(),
+            "7".into(),
+            "--nlist".into(),
+            "32".into(),
+        ];
+        let err = Config::parse(args).expect_err("config should reject mixed options");
+        assert!(err.contains("--load-index cannot be combined"));
     }
 }

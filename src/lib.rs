@@ -22,7 +22,7 @@ pub enum Metric {
 }
 
 /// Errors that can occur when building or querying the RaBitQ IVF index.
-#[derive(thiserror::Error, Debug, PartialEq)]
+#[derive(thiserror::Error, Debug)]
 pub enum RabitqError {
     /// Returned when the dimension of an input vector does not match the trained index.
     #[error("dimension mismatch: expected {expected}, got {got}")]
@@ -33,4 +33,10 @@ pub enum RabitqError {
     /// Returned when the index has not been trained before use.
     #[error("index is empty; call `train` first")]
     EmptyIndex,
+    /// Returned when persistence encounters an I/O failure.
+    #[error("i/o error while reading or writing an index: {0}")]
+    Io(#[from] std::io::Error),
+    /// Returned when the persisted bytes are inconsistent or corrupt.
+    #[error("invalid persisted index: {0}")]
+    InvalidPersistence(&'static str),
 }

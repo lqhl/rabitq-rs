@@ -10,6 +10,7 @@ use crate::ivf::{IvfRabitqIndex, SearchParams};
 use crate::kmeans::run_kmeans;
 use crate::quantizer::{quantize_with_centroid, reconstruct_into};
 use crate::Metric;
+use crate::RabitqError;
 
 fn random_vector(dim: usize, rng: &mut StdRng) -> Vec<f32> {
     (0..dim).map(|_| rng.gen::<f32>() * 2.0 - 1.0).collect()
@@ -158,6 +159,105 @@ fn one_bit_search_has_no_extended_pruning() {
             diag.estimated > 0,
             "no candidates were fully estimated in one-bit search"
         );
+    }
+}
+
+#[test]
+fn index_persistence_roundtrip() {
+    let dim = 24;
+    let total = 200;
+    let mut rng = StdRng::seed_from_u64(7412);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    let index =
+        IvfRabitqIndex::train(&data, 32, 7, Metric::InnerProduct, 9999).expect("train index");
+
+    let mut buffer = Vec::new();
+    index.save_to_writer(&mut buffer).expect("serialize index");
+
+    let restored = IvfRabitqIndex::load_from_reader(buffer.as_slice()).expect("deserialize index");
+
+    assert_eq!(
+        restored.len(),
+        index.len(),
+        "vector count changed after reload"
+    );
+
+    let params = SearchParams::new(5, 12);
+    for query in data.iter().take(5) {
+        let original = index.search(query, params).expect("search original");
+        let roundtrip = restored.search(query, params).expect("search restored");
+        assert_eq!(original, roundtrip, "round-tripped results diverged");
+    }
+}
+
+#[test]
+fn index_persistence_detects_corruption() {
+    let dim = 16;
+    let total = 128;
+    let mut rng = StdRng::seed_from_u64(0xFACE);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    let index = IvfRabitqIndex::train(&data, 24, 6, Metric::L2, 4242).expect("train index");
+    let mut buffer = Vec::new();
+    index.save_to_writer(&mut buffer).expect("serialize index");
+
+    let checksum_offset = buffer.len().saturating_sub(4);
+    assert!(checksum_offset > 0, "buffer too small for checksum test");
+    buffer[checksum_offset - 1] ^= 0xAA;
+
+    match IvfRabitqIndex::load_from_reader(buffer.as_slice()) {
+        Err(RabitqError::InvalidPersistence(msg)) => {
+            assert_eq!(msg, "checksum mismatch", "unexpected error message")
+        }
+        other => panic!("expected checksum mismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn index_persistence_validates_vector_count() {
+    let dim = 12;
+    let total = 96;
+    let mut rng = StdRng::seed_from_u64(0xC0FFEE);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    let index =
+        IvfRabitqIndex::train(&data, 16, 5, Metric::InnerProduct, 9001).expect("train index");
+    let mut buffer = Vec::new();
+    index.save_to_writer(&mut buffer).expect("serialize index");
+
+    let vector_count_offset = 4 + 4 + 4 + 1 + 1 + 1; // header + metadata before vector count
+    let checksum_offset = buffer.len().saturating_sub(4);
+    assert!(checksum_offset > vector_count_offset + 8);
+
+    let mut raw = [0u8; 8];
+    raw.copy_from_slice(&buffer[vector_count_offset..vector_count_offset + 8]);
+    let original = u64::from_le_bytes(raw);
+    let updated = original + 1;
+    buffer[vector_count_offset..vector_count_offset + 8].copy_from_slice(&updated.to_le_bytes());
+
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(&buffer[8..checksum_offset]);
+    let new_checksum = hasher.finalize();
+    buffer[checksum_offset..].copy_from_slice(&new_checksum.to_le_bytes());
+
+    match IvfRabitqIndex::load_from_reader(buffer.as_slice()) {
+        Err(RabitqError::InvalidPersistence(msg)) => {
+            assert_eq!(
+                msg, "vector count metadata mismatch",
+                "unexpected error message"
+            );
+        }
+        other => panic!("expected vector count mismatch, got {other:?}"),
     }
 }
 

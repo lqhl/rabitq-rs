@@ -2,6 +2,7 @@ use rand::prelude::*;
 use rand_distr::{Distribution, Normal};
 
 use crate::math::{dot, normalize};
+use crate::RabitqError;
 
 /// Random orthonormal rotator implemented via Gram-Schmidt orthogonalisation.
 #[derive(Debug, Clone)]
@@ -87,5 +88,22 @@ impl RandomRotator {
             }
             output[row_idx] = acc;
         }
+    }
+
+    pub(crate) fn as_slice(&self) -> &[f32] {
+        &self.matrix
+    }
+
+    pub(crate) fn from_matrix(dim: usize, matrix: Vec<f32>) -> Result<Self, RabitqError> {
+        if matrix.len()
+            != dim.checked_mul(dim).ok_or(RabitqError::InvalidPersistence(
+                "rotator dimension overflow",
+            ))?
+        {
+            return Err(RabitqError::InvalidPersistence(
+                "rotator matrix length mismatch",
+            ));
+        }
+        Ok(Self { dim, matrix })
     }
 }

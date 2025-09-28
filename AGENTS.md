@@ -1,69 +1,33 @@
-# Agent Task Plan
+# Repository Guidelines
 
-## Implementation Steps
-- [x] Review existing RaBitQ documentation and C++ reference implementation to understand algorithm details.
-- [x] Create a new Rust crate for the RaBitQ IVF library with project scaffolding.
-- [x] Implement core components: random rotator, RabitQ quantizer, and IVF indexing/search structures.
-- [x] Write unit and integration tests covering quantization accuracy and IVF+RaBitQ search functionality.
-- [x] Run `cargo fmt` and `cargo test`, then ensure the workspace is clean.
-- [x] Study the C++ fastscan pipeline to map the distance estimation and pruning factors required in Rust.
-- [x] Extend the Rust IVF searcher with a fastscan-style lower-bound check before reconstructing candidates.
-- [x] Add regression tests that compare fastscan search results against the naive reconstruction path for both L2 and IP metrics.
-- [x] Re-run `cargo fmt` and `cargo test`, ensuring the tree is clean afterward.
-- [x] Mirror the extended RaBitQ (RaBitQ+) data path from the C++ reference by storing packed ex-codes and their scaling factors in the Rust quantizer and IVF searcher.
-- [x] Add focused tests that exercise the extended-code pruning path and confirm it activates while preserving exact search parity.
-- [x] Rework the IVF search path to consume the quantized distance estimators directly (without reconstruction) so the Rust behavior matches the C++ fastscan/booster pipeline.
-- [x] Update the naive verifier and diagnostics to operate on quantized estimates and keep the regression suite aligned with the C++ semantics.
+## Project Structure & Module Organization
+- Core Rust code sits in `src/`, with `lib.rs` re-exporting modules such as `ivf`, `quantizer`, `rotation`, `math`, and `kmeans`.
+- The CLI entry point `src/bin/gist.rs` reproduces the IVF + RaBitQ benchmark; supporting scripts live under `python/`.
+- Shared fixtures and regression tests are defined in `src/tests.rs`; large datasets are expected in `data/` and are ignored by git.
+- `docs/` and `sample/` contain reference material and lightweight examples you can cite in discussions or tests.
 
-## Current Task Steps
-- [x] Verify the Rust IVF + RaBitQ pipeline against the gist dataset as described in `example.sh`.
-- [x] Address any issues uncovered during the dataset-backed test, including implementing missing functionality and adding regression tests.
-- [x] Refresh the project documentation by archiving the existing `README.md` to `README.origin.md` and authoring a new README that explains usage and testing.
-- [x] Run `cargo fmt`, `cargo clippy`, and `cargo test` after code changes, ensuring the repository is clean.
-- [x] Extend the `gist` CLI with an in-crate training mode (`--nlist`) and document how to evaluate the dataset without precomputed centroids.
+## Build, Test, and Development Commands
+- `cargo fmt` formats Rust sources; run it before every commit.
+- `cargo clippy --all-targets --all-features` must pass cleanly; treat warnings as action items.
+- `cargo test` executes the seeded unit and integration suite in `src/tests.rs`.
+- `cargo run --release --bin gist -- --help` lists benchmark options; replace `--help` with dataset flags (see README) to verify end-to-end flows.
+- `python python/ivf.py <base.fvecs> <nlist> <out_centroids> <out_assignments> <metric>` mirrors the FAISS tooling when you need pre-clustered inputs.
 
-## Active Task Steps
-- [x] Analyse the `kmeans` crate API and determine how to integrate it as a replacement for the custom trainer.
-- [x] Swap out `src/kmeans.rs` for a wrapper around the third-party crate, ensuring deterministic seeding and compatibility with the existing IVF pipeline and tests.
-- [x] Update or expand regression tests if needed so that k-means backed flows remain covered.
-- [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` to validate the workspace.
-- [x] Execute README option 1 and option 2 after the change and capture recall / QPS for comparison against the C++ baseline.
+## Coding Style & Naming Conventions
+- Follow rustfmt defaults (4-space indent, trailing commas where helpful) and keep modules focused; split helpers into `io`, `kmeans`, or `quantizer` instead of adding monoliths.
+- Prefer `snake_case` for functions and variables, `CamelCase` for types, and uppercase identifiers for constants and metrics.
+- Annotate new public APIs with concise rustdoc comments, and gate experimental code behind clearly named feature flags if needed.
 
-## Debug Task Steps
-- [x] Instrument the `gist` CLI to emit stack traces when interrupted via Ctrl-C so hanging runs can be diagnosed.
-- [x] Add progress logging around large dataset ingestion (base, centroid, assignment, and ground-truth files) to surface long-running phases.
-- [x] Back the new diagnostics with targeted unit coverage and validate the workspace with `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test`.
+## Testing Guidelines
+- Add deterministic tests that mirror the patterns in `src/tests.rs`, seeding RNGs via `StdRng::seed_from_u64` to keep runs repeatable.
+- Cover both L2 and inner-product paths when touching IVF or quantizer logic; extend the fastscan parity tests when algorithms change.
+- For dataset-backed verification, retain small caps (`--max-base`, `--max-queries`) so CI-friendly smoke runs stay fast.
 
-## Performance Optimization Steps
-- [x] Inspect the RaBitQ training path to understand why the SIMD configuration defaults to 16 lanes on non-AVX512 CPUs.
-- [x] Add runtime SIMD lane detection with an override hook so k-means can match the host's vector width without recompilation.
-- [x] Cover the new lane-selection and override logic with regression tests alongside the existing k-means suite.
-- [x] Re-run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` after the optimizations to confirm a clean workspace.
+## Commit & Pull Request Guidelines
+- Past commits use short, Title Case subjects (e.g., “Rewrite K-Means Trainer”); keep messages under 72 characters and describe the behavior change.
+- Reference related issues or benchmarks in the body, and list the commands you ran (fmt/clippy/test/bench).
+- PRs should summarize the rationale, note data requirements, and include representative output snippets from `cargo test` or the `gist` binary when relevant.
 
-## KMeans Faiss-Style Rewrite Steps
-- [x] Sketch the GEMM-based Lloyd iteration pipeline, including sampling, progressive dimension stages, and centroid reseeding strategy inspired by Faiss.
-- [x] Replace `src/kmeans.rs` with the new trainer, wiring up the GEMM assignment path, deterministic k-means++ seeding, and post-training full-dataset assignments.
-- [x] Extend the k-means unit tests to cover the sampling policy, progressive dimension schedule, and determinism of the new implementation.
-- [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` to validate the rewrite.
-
-## Performance Verification Steps
-- [ ] Run the `gist` CLI with the provided dataset to confirm the optimized k-means path completes and record its wall-clock duration.
-  - Blocked: the `data/gist/*.fvecs` and `data/gist/*.ivecs` assets are not present in this workspace image, so the command exits with `No such file or directory`.
-
-## Publish Crate Steps
-- [x] Audit the crate metadata in `Cargo.toml` and populate the fields required for crates.io publication.
-- [x] Document the end-to-end publishing workflow (including `cargo login`, `cargo package`, and `cargo publish`) in the README.
-- [x] Verify the crate packages successfully by running `cargo package` locally.
-- [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` to ensure the workspace is clean before publishing.
-
-## Crate Rename 2025 Steps
-- [x] Select an available crates.io identifier (`rabitq_ann`) to avoid the already-claimed `rabitq` name.
-- [x] Update `Cargo.toml`, the library target, and the CLI imports to use the new crate identifier.
-- [x] Align the README and publishing docs with the `rabitq_ann` package branding.
-- [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` after the rename to validate the workspace.
-
-## Crate Rename Follow-up 2025 Steps
-- [x] Document the rename follow-up plan in `AGENTS.md`, including metadata, code, and docs updates.
-- [x] Change the crate package identifier to `rabitq-rs` in `Cargo.toml` and refresh the lockfile.
-- [x] Update all library imports, CLI references, and user-facing documentation to use `rabitq_rs` as the crate path.
-- [x] Run `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test` to validate the rename.
+## Data & Benchmark Tips
+- Never version large datasets; add download instructions or scripts instead.
+- Document any local hardware requirements (e.g., AVX2 assumptions) in your PR if they influence performance-sensitive code.

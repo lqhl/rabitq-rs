@@ -1,5 +1,11 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::convert::TryFrom;
+use std::fs::File;
+use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::path::Path;
+
+use crc32fast::Hasher;
 
 use rand::prelude::*;
 
@@ -14,6 +20,103 @@ use crate::{Metric, RabitqError};
 pub struct SearchParams {
     pub top_k: usize,
     pub nprobe: usize,
+}
+
+fn write_u16<W: Write>(writer: &mut W, value: u16, hasher: Option<&mut Hasher>) -> io::Result<()> {
+    let bytes = value.to_le_bytes();
+    if let Some(h) = hasher {
+        h.update(&bytes);
+    }
+    writer.write_all(&bytes)
+}
+
+fn write_u32<W: Write>(writer: &mut W, value: u32, hasher: Option<&mut Hasher>) -> io::Result<()> {
+    let bytes = value.to_le_bytes();
+    if let Some(h) = hasher {
+        h.update(&bytes);
+    }
+    writer.write_all(&bytes)
+}
+
+fn write_u64<W: Write>(writer: &mut W, value: u64, hasher: Option<&mut Hasher>) -> io::Result<()> {
+    let bytes = value.to_le_bytes();
+    if let Some(h) = hasher {
+        h.update(&bytes);
+    }
+    writer.write_all(&bytes)
+}
+
+fn write_f32<W: Write>(writer: &mut W, value: f32, hasher: Option<&mut Hasher>) -> io::Result<()> {
+    let bytes = value.to_le_bytes();
+    if let Some(h) = hasher {
+        h.update(&bytes);
+    }
+    writer.write_all(&bytes)
+}
+
+fn read_u8<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<u8> {
+    let mut buf = [0u8; 1];
+    reader.read_exact(&mut buf)?;
+    if let Some(h) = hasher {
+        h.update(&buf);
+    }
+    Ok(buf[0])
+}
+
+fn read_u16<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<u16> {
+    let mut buf = [0u8; 2];
+    reader.read_exact(&mut buf)?;
+    if let Some(h) = hasher {
+        h.update(&buf);
+    }
+    Ok(u16::from_le_bytes(buf))
+}
+
+fn read_u32<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<u32> {
+    let mut buf = [0u8; 4];
+    reader.read_exact(&mut buf)?;
+    if let Some(h) = hasher {
+        h.update(&buf);
+    }
+    Ok(u32::from_le_bytes(buf))
+}
+
+fn read_u64<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<u64> {
+    let mut buf = [0u8; 8];
+    reader.read_exact(&mut buf)?;
+    if let Some(h) = hasher {
+        h.update(&buf);
+    }
+    Ok(u64::from_le_bytes(buf))
+}
+
+fn read_f32<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<f32> {
+    let mut buf = [0u8; 4];
+    reader.read_exact(&mut buf)?;
+    if let Some(h) = hasher {
+        h.update(&buf);
+    }
+    Ok(f32::from_le_bytes(buf))
+}
+
+fn usize_from_u64(value: u64) -> Result<usize, RabitqError> {
+    usize::try_from(value)
+        .map_err(|_| RabitqError::InvalidPersistence("value exceeds platform limits"))
+}
+
+fn metric_to_tag(metric: Metric) -> u8 {
+    match metric {
+        Metric::L2 => 0,
+        Metric::InnerProduct => 1,
+    }
+}
+
+fn tag_to_metric(tag: u8) -> Option<Metric> {
+    match tag {
+        0 => Some(Metric::L2),
+        1 => Some(Metric::InnerProduct),
+        _ => None,
+    }
 }
 
 impl SearchParams {
@@ -35,6 +138,9 @@ pub(crate) struct SearchDiagnostics {
     pub skipped_by_lower_bound: usize,
     pub extended_evaluations: usize,
 }
+
+const PERSIST_MAGIC: [u8; 4] = *b"RBQ1";
+const PERSIST_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
 struct ClusterEntry {
@@ -283,6 +389,285 @@ impl IvfRabitqIndex {
     /// Check whether the index is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Number of IVF clusters maintained by the index.
+    pub fn cluster_count(&self) -> usize {
+        self.clusters.len()
+    }
+
+    /// Persist the index to the provided filesystem path.
+    pub fn save_to_path<P: AsRef<Path>>(&self, path: P) -> Result<(), RabitqError> {
+        let file = File::create(path)?;
+        let writer = BufWriter::new(file);
+        self.save_to_writer(writer)
+    }
+
+    /// Persist the index using the supplied writer.
+    pub fn save_to_writer<W: Write>(&self, writer: W) -> Result<(), RabitqError> {
+        let mut writer = BufWriter::new(writer);
+        writer.write_all(&PERSIST_MAGIC)?;
+        write_u32(&mut writer, PERSIST_VERSION, None)?;
+
+        let mut hasher = Hasher::new();
+
+        let dim = u32::try_from(self.dim)
+            .map_err(|_| RabitqError::InvalidPersistence("dimension exceeds persistence limits"))?;
+        write_u32(&mut writer, dim, Some(&mut hasher))?;
+
+        let metric_tag = metric_to_tag(self.metric);
+        writer.write_all(&[metric_tag])?;
+        hasher.update(&[metric_tag]);
+
+        let ex_bits = u8::try_from(self.ex_bits)
+            .map_err(|_| RabitqError::InvalidPersistence("ex_bits exceeds persistence limits"))?;
+        writer.write_all(&[ex_bits])?;
+        hasher.update(&[ex_bits]);
+
+        let total_bits = self
+            .ex_bits
+            .checked_add(1)
+            .ok_or(RabitqError::InvalidPersistence("total_bits overflow"))?;
+        let total_bits_u8 = u8::try_from(total_bits).map_err(|_| {
+            RabitqError::InvalidPersistence("total_bits exceeds persistence limits")
+        })?;
+        writer.write_all(&[total_bits_u8])?;
+        hasher.update(&[total_bits_u8]);
+
+        let vector_count = u64::try_from(self.len()).map_err(|_| {
+            RabitqError::InvalidPersistence("vector count exceeds persistence limits")
+        })?;
+        write_u64(&mut writer, vector_count, Some(&mut hasher))?;
+
+        let cluster_count = u64::try_from(self.clusters.len()).map_err(|_| {
+            RabitqError::InvalidPersistence("cluster count exceeds persistence limits")
+        })?;
+        write_u64(&mut writer, cluster_count, Some(&mut hasher))?;
+
+        let rotator_slice = self.rotator.as_slice();
+        let rotator_len = u64::try_from(rotator_slice.len())
+            .map_err(|_| RabitqError::InvalidPersistence("rotator matrix too large"))?;
+        write_u64(&mut writer, rotator_len, Some(&mut hasher))?;
+        for &value in rotator_slice {
+            write_f32(&mut writer, value, Some(&mut hasher))?;
+        }
+
+        for cluster in &self.clusters {
+            if cluster.centroid.len() != self.dim {
+                return Err(RabitqError::InvalidPersistence(
+                    "cluster centroid dimension mismatch",
+                ));
+            }
+            if cluster.ids.len() != cluster.vectors.len() {
+                return Err(RabitqError::InvalidPersistence(
+                    "cluster id/vector count mismatch",
+                ));
+            }
+
+            for &value in &cluster.centroid {
+                write_f32(&mut writer, value, Some(&mut hasher))?;
+            }
+
+            let entry_count = u64::try_from(cluster.ids.len()).map_err(|_| {
+                RabitqError::InvalidPersistence("cluster entry count exceeds persistence limits")
+            })?;
+            write_u64(&mut writer, entry_count, Some(&mut hasher))?;
+
+            for &id in &cluster.ids {
+                let encoded = u64::try_from(id).map_err(|_| {
+                    RabitqError::InvalidPersistence("vector id exceeds persistence limits")
+                })?;
+                write_u64(&mut writer, encoded, Some(&mut hasher))?;
+            }
+
+            for vector in &cluster.vectors {
+                if vector.code.len() != self.dim
+                    || vector.binary_code.len() != self.dim
+                    || vector.ex_code.len() != self.dim
+                {
+                    return Err(RabitqError::InvalidPersistence(
+                        "quantized vector dimension mismatch",
+                    ));
+                }
+
+                for &value in &vector.code {
+                    write_u16(&mut writer, value, Some(&mut hasher))?;
+                }
+
+                writer.write_all(&vector.binary_code)?;
+                hasher.update(&vector.binary_code);
+
+                for &value in &vector.ex_code {
+                    write_u16(&mut writer, value, Some(&mut hasher))?;
+                }
+
+                write_f32(&mut writer, vector.delta, Some(&mut hasher))?;
+                write_f32(&mut writer, vector.vl, Some(&mut hasher))?;
+                write_f32(&mut writer, vector.f_add, Some(&mut hasher))?;
+                write_f32(&mut writer, vector.f_rescale, Some(&mut hasher))?;
+                write_f32(&mut writer, vector.f_error, Some(&mut hasher))?;
+                write_f32(&mut writer, vector.residual_norm, Some(&mut hasher))?;
+                write_f32(&mut writer, vector.f_add_ex, Some(&mut hasher))?;
+                write_f32(&mut writer, vector.f_rescale_ex, Some(&mut hasher))?;
+            }
+        }
+
+        let checksum = hasher.finalize();
+        write_u32(&mut writer, checksum, None)?;
+
+        writer.flush()?;
+        Ok(())
+    }
+
+    /// Load an index from the provided filesystem path.
+    pub fn load_from_path<P: AsRef<Path>>(path: P) -> Result<Self, RabitqError> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        Self::load_from_reader(reader)
+    }
+
+    /// Load an index from a persisted byte stream.
+    pub fn load_from_reader<R: Read>(reader: R) -> Result<Self, RabitqError> {
+        let mut reader = BufReader::new(reader);
+        let mut magic = [0u8; 4];
+        reader.read_exact(&mut magic)?;
+        if magic != PERSIST_MAGIC {
+            return Err(RabitqError::InvalidPersistence("unrecognized file header"));
+        }
+
+        let version = read_u32(&mut reader, None)?;
+        if version != PERSIST_VERSION {
+            return Err(RabitqError::InvalidPersistence(
+                "unsupported index format version",
+            ));
+        }
+
+        let mut hasher = Hasher::new();
+
+        let dim = read_u32(&mut reader, Some(&mut hasher))? as usize;
+        if dim == 0 {
+            return Err(RabitqError::InvalidPersistence(
+                "dimension must be positive",
+            ));
+        }
+
+        let metric_tag = read_u8(&mut reader, Some(&mut hasher))?;
+        let metric = tag_to_metric(metric_tag)
+            .ok_or(RabitqError::InvalidPersistence("unknown metric tag"))?;
+
+        let ex_bits = read_u8(&mut reader, Some(&mut hasher))? as usize;
+        if ex_bits > 16 {
+            return Err(RabitqError::InvalidPersistence("ex_bits out of range"));
+        }
+
+        let total_bits = read_u8(&mut reader, Some(&mut hasher))? as usize;
+        if total_bits == 0 || total_bits > 16 {
+            return Err(RabitqError::InvalidPersistence("total_bits out of range"));
+        }
+        if total_bits.saturating_sub(1) != ex_bits {
+            return Err(RabitqError::InvalidPersistence(
+                "total_bits does not match ex_bits",
+            ));
+        }
+
+        let expected_vectors = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
+
+        let cluster_count = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
+        let rotator_len = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
+
+        let mut rotator_matrix = vec![0f32; rotator_len];
+        for value in rotator_matrix.iter_mut() {
+            *value = read_f32(&mut reader, Some(&mut hasher))?;
+        }
+        let rotator = RandomRotator::from_matrix(dim, rotator_matrix)?;
+
+        let mut clusters = Vec::with_capacity(cluster_count);
+        for _ in 0..cluster_count {
+            let mut centroid = vec![0f32; dim];
+            for value in centroid.iter_mut() {
+                *value = read_f32(&mut reader, Some(&mut hasher))?;
+            }
+
+            let entry_count = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
+
+            let mut ids = Vec::with_capacity(entry_count);
+            for _ in 0..entry_count {
+                ids.push(usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?);
+            }
+
+            let mut vectors = Vec::with_capacity(entry_count);
+            for _ in 0..entry_count {
+                let mut code = vec![0u16; dim];
+                for value in code.iter_mut() {
+                    *value = read_u16(&mut reader, Some(&mut hasher))?;
+                }
+
+                let mut binary_code = vec![0u8; dim];
+                reader.read_exact(&mut binary_code)?;
+                hasher.update(&binary_code);
+
+                let mut ex_code = vec![0u16; dim];
+                for value in ex_code.iter_mut() {
+                    *value = read_u16(&mut reader, Some(&mut hasher))?;
+                }
+
+                let delta = read_f32(&mut reader, Some(&mut hasher))?;
+                let vl = read_f32(&mut reader, Some(&mut hasher))?;
+                let f_add = read_f32(&mut reader, Some(&mut hasher))?;
+                let f_rescale = read_f32(&mut reader, Some(&mut hasher))?;
+                let f_error = read_f32(&mut reader, Some(&mut hasher))?;
+                let residual_norm = read_f32(&mut reader, Some(&mut hasher))?;
+                let f_add_ex = read_f32(&mut reader, Some(&mut hasher))?;
+                let f_rescale_ex = read_f32(&mut reader, Some(&mut hasher))?;
+
+                vectors.push(QuantizedVector {
+                    code,
+                    binary_code,
+                    ex_code,
+                    delta,
+                    vl,
+                    f_add,
+                    f_rescale,
+                    f_error,
+                    residual_norm,
+                    f_add_ex,
+                    f_rescale_ex,
+                });
+            }
+
+            if ids.len() != vectors.len() {
+                return Err(RabitqError::InvalidPersistence(
+                    "cluster id/vector count mismatch",
+                ));
+            }
+
+            clusters.push(ClusterEntry {
+                centroid,
+                ids,
+                vectors,
+            });
+        }
+
+        let actual_vectors: usize = clusters.iter().map(|c| c.ids.len()).sum();
+        if actual_vectors != expected_vectors {
+            return Err(RabitqError::InvalidPersistence(
+                "vector count metadata mismatch",
+            ));
+        }
+
+        let computed_checksum = hasher.finalize();
+        let stored_checksum = read_u32(&mut reader, None)?;
+        if computed_checksum != stored_checksum {
+            return Err(RabitqError::InvalidPersistence("checksum mismatch"));
+        }
+
+        Ok(Self {
+            dim,
+            metric,
+            rotator,
+            clusters,
+            ex_bits,
+        })
     }
 
     /// Search for the nearest neighbours of the provided query vector.

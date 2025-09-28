@@ -140,6 +140,39 @@ the evaluation output matches the format of the pre-computed mode.
 
 All CLI options are documented in `cargo run --bin gist -- --help`.
 
+### Persisting trained indexes
+
+Use the persistence hooks to avoid retraining between benchmarking runs:
+
+```bash
+cargo run --release --bin gist -- \
+    --base data/gist/gist_base.fvecs \
+    --bits 7 \
+    --nlist 4096 \
+    --queries data/gist/gist_query.fvecs \
+    --groundtruth data/gist/gist_groundtruth.ivecs \
+    --top-k 100 \
+    --nprobe 1024 \
+    --metric l2 \
+    --max-base 1000000 \
+    --max-queries 200 \
+    --seed 1337 \
+    --save-index data/gist/gist_rbq.idx
+
+cargo run --release --bin gist -- \
+    --base data/gist/gist_base.fvecs \
+    --queries data/gist/gist_query.fvecs \
+    --groundtruth data/gist/gist_groundtruth.ivecs \
+    --top-k 100 \
+    --nprobe 1024 \
+    --metric l2 \
+    --max-base 1000000 \
+    --max-queries 200 \
+    --load-index data/gist/gist_rbq.idx
+```
+
+The first command trains with the Rust pipeline, writes the persisted index, and records the benchmark. The second command reuses the saved index for subsequent recall sweeps or profiling runs.
+
 ## Testing and linting
 
 The test suite now includes regression checks for the dataset readers and the pre-clustered IVF flow. Run the full suite along
