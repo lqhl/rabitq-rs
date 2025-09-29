@@ -1,7 +1,7 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
-use crate::math::{l2_norm_sqr, subtract};
+use crate::math::{dot, l2_norm_sqr, subtract};
 use crate::Metric;
 
 const K_TIGHT_START: [f64; 9] = [0.0, 0.15, 0.20, 0.52, 0.59, 0.71, 0.75, 0.77, 0.81];
@@ -71,13 +71,9 @@ pub fn quantize_with_centroid(
     let (f_add, f_rescale, f_error, residual_norm) =
         compute_one_bit_factors(&residual, centroid, &binary_code, metric);
     let cb = -((1 << ex_bits) as f32 - 0.5);
-    let mut norm_quan_sqr = 0.0f32;
-    let mut dot_residual_quant = 0.0f32;
-    for i in 0..dim {
-        let q_val = total_code[i] as f32 + cb;
-        norm_quan_sqr += q_val * q_val;
-        dot_residual_quant += residual[i] * q_val;
-    }
+    let quantized_shifted: Vec<f32> = total_code.iter().map(|&code| code as f32 + cb).collect();
+    let norm_quan_sqr = l2_norm_sqr(&quantized_shifted);
+    let dot_residual_quant = dot(&residual, &quantized_shifted);
 
     let norm_residual_sqr = l2_norm_sqr(&residual);
     let norm_residual = norm_residual_sqr.sqrt();
@@ -129,22 +125,14 @@ fn compute_one_bit_factors(
     metric: Metric,
 ) -> (f32, f32, f32, f32) {
     let dim = residual.len();
-    let mut l2_sqr = 0.0f32;
-    let mut xu_cb_norm_sqr = 0.0f32;
-    let mut ip_resi_xucb = 0.0f32;
-    let mut ip_cent_xucb = 0.0f32;
-    let mut dot_residual_centroid = 0.0f32;
-
-    for ((&res, &cent), &bit) in residual.iter().zip(centroid.iter()).zip(binary_code.iter()) {
-        let xu = bit as f32 - 0.5f32;
-        l2_sqr += res * res;
-        xu_cb_norm_sqr += xu * xu;
-        ip_resi_xucb += res * xu;
-        ip_cent_xucb += cent * xu;
-        dot_residual_centroid += res * cent;
-    }
-
+    let xu_cb: Vec<f32> = binary_code.iter().map(|&bit| bit as f32 - 0.5f32).collect();
+    let l2_sqr = l2_norm_sqr(residual);
     let l2_norm = l2_sqr.sqrt();
+    let xu_cb_norm_sqr = l2_norm_sqr(&xu_cb);
+    let ip_resi_xucb = dot(residual, &xu_cb);
+    let ip_cent_xucb = dot(centroid, &xu_cb);
+    let dot_residual_centroid = dot(residual, centroid);
+
     let mut denom = ip_resi_xucb;
     if denom.abs() <= f32::EPSILON {
         denom = f32::INFINITY;
@@ -342,25 +330,20 @@ fn compute_extended_factors(
 ) -> (f32, f32) {
     let dim = residual.len();
     let cb = -((1 << ex_bits) as f32 - 0.5);
+    let xu_cb: Vec<f32> = (0..dim)
+        .map(|i| {
+            let total = ex_code[i] as u32 + ((binary_code[i] as u32) << ex_bits);
+            total as f32 + cb
+        })
+        .collect();
 
-    let mut l2_sqr = 0.0f32;
-    let mut xu_cb_norm_sqr = 0.0f32;
-    let mut ip_resi_xucb = 0.0f32;
-    let mut ip_cent_xucb = 0.0f32;
-    let mut dot_residual_centroid = 0.0f32;
-
-    for i in 0..dim {
-        let total = ex_code[i] as u32 + ((binary_code[i] as u32) << ex_bits);
-        let xu_cb = total as f32 + cb;
-        let res = residual[i];
-        l2_sqr += res * res;
-        xu_cb_norm_sqr += xu_cb * xu_cb;
-        ip_resi_xucb += res * xu_cb;
-        ip_cent_xucb += centroid[i] * xu_cb;
-        dot_residual_centroid += res * centroid[i];
-    }
-
+    let l2_sqr = l2_norm_sqr(residual);
     let l2_norm = l2_sqr.sqrt();
+    let xu_cb_norm_sqr = l2_norm_sqr(&xu_cb);
+    let ip_resi_xucb = dot(residual, &xu_cb);
+    let ip_cent_xucb = dot(centroid, &xu_cb);
+    let dot_residual_centroid = dot(residual, centroid);
+
     let mut denom = ip_resi_xucb * ip_resi_xucb;
     if denom <= f32::EPSILON {
         denom = f32::INFINITY;
