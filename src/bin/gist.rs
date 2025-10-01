@@ -10,6 +10,9 @@ use rabitq_rs::io::{read_fvecs, read_groundtruth, read_ids};
 use rabitq_rs::ivf::{IvfRabitqIndex, SearchParams};
 use rabitq_rs::Metric;
 
+use rayon::prelude::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 type CliResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 fn main() {
@@ -183,9 +186,24 @@ fn evaluate_search(
     config: &Config,
 ) -> CliResult<()> {
     let params = SearchParams::new(config.top_k, config.nprobe);
-    let mut total_hits = 0usize;
-    let mut total_possible = 0usize;
-    let mut total_time = Duration::default();
+
+    // Configure rayon thread pool if requested
+    if let Some(num_threads) = config.threads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build_global()
+            .map_err(|e| format!("Failed to configure thread pool: {}", e))?;
+        println!("Using {} threads for parallel search", num_threads);
+    }
+
+    // Warmup phase
+    if config.warmup_queries > 0 && !queries.is_empty() {
+        let warmup_count = config.warmup_queries.min(queries.len());
+        println!("Warming up with {} queries...", warmup_count);
+        for query in queries.iter().take(warmup_count) {
+            let _ = index.search(query, params);
+        }
+    }
 
     println!(
         "Evaluating {} queries with top_k={} and nprobe={}...",
@@ -194,31 +212,49 @@ fn evaluate_search(
         config.nprobe
     );
 
-    for (idx, query) in queries.iter().enumerate() {
-        let start = Instant::now();
-        let results = index.search(query, params)?;
-        total_time += start.elapsed();
+    // Parallel query processing with latency collection
+    let total_hits = AtomicUsize::new(0);
+    let total_possible = AtomicUsize::new(0);
 
-        let gt = &groundtruth[idx];
-        if gt.is_empty() {
-            continue;
-        }
-        let limit = config.top_k.min(gt.len());
-        total_possible += limit;
-        let gt_slice: HashSet<usize> = gt[..limit].iter().copied().collect();
+    let start_time = Instant::now();
+    let latencies: Vec<Duration> = queries
+        .par_iter()
+        .enumerate()
+        .map(|(idx, query)| {
+            let query_start = Instant::now();
+            let results = index.search(query, params).expect("search failed");
+            let query_time = query_start.elapsed();
 
-        for candidate in results.iter().take(limit) {
-            if gt_slice.contains(&candidate.id) {
-                total_hits += 1;
+            let gt = &groundtruth[idx];
+            if !gt.is_empty() {
+                let limit = config.top_k.min(gt.len());
+                total_possible.fetch_add(limit, Ordering::Relaxed);
+                let gt_slice: HashSet<usize> = gt[..limit].iter().copied().collect();
+
+                let hits = results
+                    .iter()
+                    .take(limit)
+                    .filter(|candidate| gt_slice.contains(&candidate.id))
+                    .count();
+                total_hits.fetch_add(hits, Ordering::Relaxed);
             }
-        }
-    }
 
-    let recall = if total_possible > 0 {
-        total_hits as f32 / total_possible as f32
+            query_time
+        })
+        .collect();
+
+    let total_time = start_time.elapsed();
+    let hits = total_hits.load(Ordering::Relaxed);
+    let possible = total_possible.load(Ordering::Relaxed);
+
+    // Calculate recall
+    let recall = if possible > 0 {
+        hits as f32 / possible as f32
     } else {
         0.0
     };
+
+    // Calculate QPS
     let total_seconds = total_time.as_secs_f64();
     let qps = if total_seconds > f64::EPSILON {
         queries.len() as f64 / total_seconds
@@ -226,7 +262,44 @@ fn evaluate_search(
         f64::INFINITY
     };
 
-    println!("Recall@{} = {:.4}, QPS = {:.2}", config.top_k, recall, qps);
+    // Calculate latency statistics
+    let mut sorted_latencies = latencies.clone();
+    sorted_latencies.sort();
+    let count = sorted_latencies.len();
+
+    let min_latency = sorted_latencies.first().map(|d| d.as_micros()).unwrap_or(0);
+    let max_latency = sorted_latencies.last().map(|d| d.as_micros()).unwrap_or(0);
+    let p50_latency = if count > 0 {
+        sorted_latencies[count / 2].as_micros()
+    } else {
+        0
+    };
+    let p95_latency = if count > 0 {
+        sorted_latencies[count * 95 / 100].as_micros()
+    } else {
+        0
+    };
+    let p99_latency = if count > 0 {
+        sorted_latencies[count * 99 / 100].as_micros()
+    } else {
+        0
+    };
+    let avg_latency = if count > 0 {
+        latencies.iter().map(|d| d.as_micros()).sum::<u128>() / count as u128
+    } else {
+        0
+    };
+
+    println!("\n=== Results ===");
+    println!("Recall@{} = {:.4}", config.top_k, recall);
+    println!("QPS = {:.2}", qps);
+    println!("\n=== Latency Statistics (microseconds) ===");
+    println!("Min:    {:>8}", min_latency);
+    println!("Avg:    {:>8}", avg_latency);
+    println!("P50:    {:>8}", p50_latency);
+    println!("P95:    {:>8}", p95_latency);
+    println!("P99:    {:>8}", p99_latency);
+    println!("Max:    {:>8}", max_latency);
 
     Ok(())
 }
@@ -248,6 +321,8 @@ struct Config {
     seed: u64,
     load_index: Option<PathBuf>,
     save_index: Option<PathBuf>,
+    threads: Option<usize>,
+    warmup_queries: usize,
 }
 
 impl Config {
@@ -267,6 +342,8 @@ impl Config {
         let mut seed = 0x5a5a_1234_u64;
         let mut load_index = None;
         let mut save_index = None;
+        let mut threads = None;
+        let mut warmup_queries = 10usize;
 
         let mut iter = args.into_iter();
         while let Some(arg) = iter.next() {
@@ -289,6 +366,8 @@ impl Config {
                 "--seed" => seed = next_u64(&mut iter, &arg)?,
                 "--load-index" => load_index = Some(next_path(&mut iter, &arg)?),
                 "--save-index" => save_index = Some(next_path(&mut iter, &arg)?),
+                "--threads" => threads = Some(next_usize(&mut iter, &arg)?),
+                "--warmup-queries" => warmup_queries = next_usize(&mut iter, &arg)?,
                 other => {
                     return Err(format!("unrecognised argument: {other}"));
                 }
@@ -352,6 +431,8 @@ impl Config {
             seed,
             load_index,
             save_index,
+            threads,
+            warmup_queries,
         })
     }
 }
@@ -409,6 +490,11 @@ fn print_usage() {
     eprintln!("    --seed <value>        Random seed for the rotator");
     eprintln!("    --save-index <path>   Persist the trained index to disk");
     eprintln!("    --load-index <path>   Load a persisted index instead of retraining");
+    eprintln!("\nPerformance tuning:");
+    eprintln!(
+        "    --threads <value>     Number of threads for parallel search (default: rayon default)"
+    );
+    eprintln!("    --warmup-queries <n>  Number of warmup queries before benchmark (default: 10)");
 }
 
 fn install_signal_handlers() -> std::io::Result<()> {
