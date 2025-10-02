@@ -470,11 +470,9 @@ impl DynamicRotator {
         data: &[u8],
     ) -> Result<Self, RabitqError> {
         match rotator_type {
-            RotatorType::MatrixRotator => {
-                Ok(DynamicRotator::Matrix(MatrixRotator::deserialize(
-                    dim, padded_dim, data,
-                )?))
-            }
+            RotatorType::MatrixRotator => Ok(DynamicRotator::Matrix(MatrixRotator::deserialize(
+                dim, padded_dim, data,
+            )?)),
             RotatorType::FhtKacRotator => Ok(DynamicRotator::Fht(FhtKacRotator::deserialize(
                 dim, padded_dim, data,
             )?)),
@@ -561,7 +559,12 @@ mod tests {
         let matrix_bytes = matrix_rot.serialize();
         let matrix_rot2 = MatrixRotator::deserialize(dim, dim, &matrix_bytes).unwrap();
 
-        let input = vec![1.0, 2.0, 3.0].iter().cycle().take(dim).copied().collect::<Vec<_>>();
+        let input = vec![1.0, 2.0, 3.0]
+            .iter()
+            .cycle()
+            .take(dim)
+            .copied()
+            .collect::<Vec<_>>();
         let out1 = matrix_rot.rotate(&input);
         let out2 = matrix_rot2.rotate(&input);
 

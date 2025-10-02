@@ -228,7 +228,15 @@ fn build_index(base: &[Vec<f32>], config: &Config) -> CliResult<IvfRabitqIndex> 
             "Training index with built-in k-means ({} clusters)...",
             nlist
         );
-        IvfRabitqIndex::train(base, nlist, config.bits, config.metric, RotatorType::FhtKacRotator, config.seed, config.faster_config)?
+        IvfRabitqIndex::train(
+            base,
+            nlist,
+            config.bits,
+            config.metric,
+            RotatorType::FhtKacRotator,
+            config.seed,
+            config.faster_config,
+        )?
     } else {
         return Err(
             "Must specify either --load-index, --nlist, or both --centroids and --assignments"
