@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use rabitq_rs::io::{read_fvecs, read_groundtruth, read_ids};
 use rabitq_rs::ivf::{IvfRabitqIndex, SearchParams};
-use rabitq_rs::Metric;
+use rabitq_rs::{Metric, RotatorType};
 
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -219,6 +219,7 @@ fn build_index(base: &[Vec<f32>], config: &Config) -> CliResult<IvfRabitqIndex> 
             &assignments,
             config.bits,
             config.metric,
+            RotatorType::FhtKacRotator,
             config.seed,
         )?
     } else if let Some(nlist) = config.nlist {
@@ -226,7 +227,7 @@ fn build_index(base: &[Vec<f32>], config: &Config) -> CliResult<IvfRabitqIndex> 
             "Training index with built-in k-means ({} clusters)...",
             nlist
         );
-        IvfRabitqIndex::train(base, nlist, config.bits, config.metric, config.seed)?
+        IvfRabitqIndex::train(base, nlist, config.bits, config.metric, RotatorType::FhtKacRotator, config.seed)?
     } else {
         return Err(
             "Must specify either --load-index, --nlist, or both --centroids and --assignments"

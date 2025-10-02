@@ -8,6 +8,7 @@ mod rotation;
 
 pub use ivf::{IvfRabitqIndex, SearchParams, SearchResult};
 pub use quantizer::{QuantizedVector, RabitqConfig};
+pub use rotation::RotatorType;
 
 #[cfg(test)]
 mod tests;

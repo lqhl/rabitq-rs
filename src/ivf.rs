@@ -12,7 +12,7 @@ use rand::prelude::*;
 use crate::kmeans::{run_kmeans, KMeansResult};
 use crate::math::{dot, l2_distance_sqr};
 use crate::quantizer::{quantize_with_centroid, QuantizedVector};
-use crate::rotation::RandomRotator;
+use crate::rotation::{DynamicRotator, RotatorType};
 use crate::{Metric, RabitqError};
 
 /// Parameters for IVF search.
@@ -199,8 +199,9 @@ impl Ord for HeapEntry {
 #[derive(Debug, Clone)]
 pub struct IvfRabitqIndex {
     dim: usize,
+    padded_dim: usize,
     metric: Metric,
-    rotator: RandomRotator,
+    rotator: DynamicRotator,
     clusters: Vec<ClusterEntry>,
     ex_bits: usize,
 }
@@ -212,6 +213,7 @@ impl IvfRabitqIndex {
         nlist: usize,
         total_bits: usize,
         metric: Metric,
+        rotator_type: RotatorType,
         seed: u64,
     ) -> Result<Self, RabitqError> {
         if data.is_empty() {
@@ -240,7 +242,8 @@ impl IvfRabitqIndex {
             ));
         }
 
-        let rotator = RandomRotator::new(dim, seed);
+        let rotator = DynamicRotator::new(dim, rotator_type, seed);
+        let padded_dim = rotator.padded_dim();
         let rotated_data: Vec<Vec<f32>> = data.iter().map(|v| rotator.rotate(v)).collect();
 
         let mut rng = StdRng::seed_from_u64(seed ^ 0x5a5a_5a5a5a5a5a5a);
@@ -251,6 +254,7 @@ impl IvfRabitqIndex {
 
         Self::build_from_rotated(
             dim,
+            padded_dim,
             metric,
             rotator,
             centroids,
@@ -267,6 +271,7 @@ impl IvfRabitqIndex {
         assignments: &[usize],
         total_bits: usize,
         metric: Metric,
+        rotator_type: RotatorType,
         seed: u64,
     ) -> Result<Self, RabitqError> {
         if data.is_empty() {
@@ -315,13 +320,15 @@ impl IvfRabitqIndex {
             ));
         }
 
-        let rotator = RandomRotator::new(dim, seed);
+        let rotator = DynamicRotator::new(dim, rotator_type, seed);
+        let padded_dim = rotator.padded_dim();
         let rotated_data: Vec<Vec<f32>> = data.iter().map(|v| rotator.rotate(v)).collect();
         let rotated_centroids: Vec<Vec<f32>> =
             centroids.iter().map(|c| rotator.rotate(c)).collect();
 
         Self::build_from_rotated(
             dim,
+            padded_dim,
             metric,
             rotator,
             rotated_centroids,
@@ -333,8 +340,9 @@ impl IvfRabitqIndex {
 
     fn build_from_rotated(
         dim: usize,
+        padded_dim: usize,
         metric: Metric,
-        rotator: RandomRotator,
+        rotator: DynamicRotator,
         rotated_centroids: Vec<Vec<f32>>,
         rotated_data: &[Vec<f32>],
         assignments: &[usize],
@@ -374,6 +382,7 @@ impl IvfRabitqIndex {
 
         Ok(Self {
             dim,
+            padded_dim,
             metric,
             rotator,
             clusters,
@@ -415,9 +424,17 @@ impl IvfRabitqIndex {
             .map_err(|_| RabitqError::InvalidPersistence("dimension exceeds persistence limits"))?;
         write_u32(&mut writer, dim, Some(&mut hasher))?;
 
+        let padded_dim = u32::try_from(self.padded_dim)
+            .map_err(|_| RabitqError::InvalidPersistence("padded_dim exceeds persistence limits"))?;
+        write_u32(&mut writer, padded_dim, Some(&mut hasher))?;
+
         let metric_tag = metric_to_tag(self.metric);
         writer.write_all(&[metric_tag])?;
         hasher.update(&[metric_tag]);
+
+        let rotator_type_tag = self.rotator.rotator_type() as u8;
+        writer.write_all(&[rotator_type_tag])?;
+        hasher.update(&[rotator_type_tag]);
 
         let ex_bits = u8::try_from(self.ex_bits)
             .map_err(|_| RabitqError::InvalidPersistence("ex_bits exceeds persistence limits"))?;
@@ -444,16 +461,16 @@ impl IvfRabitqIndex {
         })?;
         write_u64(&mut writer, cluster_count, Some(&mut hasher))?;
 
-        let rotator_slice = self.rotator.as_slice();
-        let rotator_len = u64::try_from(rotator_slice.len())
-            .map_err(|_| RabitqError::InvalidPersistence("rotator matrix too large"))?;
+        // Save rotator state (much smaller than full matrix for FHT)
+        let rotator_data = self.rotator.serialize();
+        let rotator_len = u64::try_from(rotator_data.len())
+            .map_err(|_| RabitqError::InvalidPersistence("rotator data too large"))?;
         write_u64(&mut writer, rotator_len, Some(&mut hasher))?;
-        for &value in rotator_slice {
-            write_f32(&mut writer, value, Some(&mut hasher))?;
-        }
+        writer.write_all(&rotator_data)?;
+        hasher.update(&rotator_data);
 
         for cluster in &self.clusters {
-            if cluster.centroid.len() != self.dim {
+            if cluster.centroid.len() != self.padded_dim {
                 return Err(RabitqError::InvalidPersistence(
                     "cluster centroid dimension mismatch",
                 ));
@@ -481,9 +498,9 @@ impl IvfRabitqIndex {
             }
 
             for vector in &cluster.vectors {
-                if vector.code.len() != self.dim
-                    || vector.binary_code.len() != self.dim
-                    || vector.ex_code.len() != self.dim
+                if vector.code.len() != self.padded_dim
+                    || vector.binary_code.len() != self.padded_dim
+                    || vector.ex_code.len() != self.padded_dim
                 {
                     return Err(RabitqError::InvalidPersistence(
                         "quantized vector dimension mismatch",
@@ -551,9 +568,20 @@ impl IvfRabitqIndex {
             ));
         }
 
+        let padded_dim = read_u32(&mut reader, Some(&mut hasher))? as usize;
+        if padded_dim < dim {
+            return Err(RabitqError::InvalidPersistence(
+                "padded_dim must be >= dim",
+            ));
+        }
+
         let metric_tag = read_u8(&mut reader, Some(&mut hasher))?;
         let metric = tag_to_metric(metric_tag)
             .ok_or(RabitqError::InvalidPersistence("unknown metric tag"))?;
+
+        let rotator_type_tag = read_u8(&mut reader, Some(&mut hasher))?;
+        let rotator_type = RotatorType::from_u8(rotator_type_tag)
+            .ok_or(RabitqError::InvalidPersistence("unknown rotator type tag"))?;
 
         let ex_bits = read_u8(&mut reader, Some(&mut hasher))? as usize;
         if ex_bits > 16 {
@@ -573,17 +601,17 @@ impl IvfRabitqIndex {
         let expected_vectors = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
 
         let cluster_count = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
-        let rotator_len = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
+        let rotator_data_len = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
 
-        let mut rotator_matrix = vec![0f32; rotator_len];
-        for value in rotator_matrix.iter_mut() {
-            *value = read_f32(&mut reader, Some(&mut hasher))?;
-        }
-        let rotator = RandomRotator::from_matrix(dim, rotator_matrix)?;
+        let mut rotator_data = vec![0u8; rotator_data_len];
+        reader.read_exact(&mut rotator_data)?;
+        hasher.update(&rotator_data);
+
+        let rotator = DynamicRotator::deserialize(dim, padded_dim, rotator_type, &rotator_data)?;
 
         let mut clusters = Vec::with_capacity(cluster_count);
         for _ in 0..cluster_count {
-            let mut centroid = vec![0f32; dim];
+            let mut centroid = vec![0f32; padded_dim];
             for value in centroid.iter_mut() {
                 *value = read_f32(&mut reader, Some(&mut hasher))?;
             }
@@ -597,16 +625,16 @@ impl IvfRabitqIndex {
 
             let mut vectors = Vec::with_capacity(entry_count);
             for _ in 0..entry_count {
-                let mut code = vec![0u16; dim];
+                let mut code = vec![0u16; padded_dim];
                 for value in code.iter_mut() {
                     *value = read_u16(&mut reader, Some(&mut hasher))?;
                 }
 
-                let mut binary_code = vec![0u8; dim];
+                let mut binary_code = vec![0u8; padded_dim];
                 reader.read_exact(&mut binary_code)?;
                 hasher.update(&binary_code);
 
-                let mut ex_code = vec![0u16; dim];
+                let mut ex_code = vec![0u16; padded_dim];
                 for value in ex_code.iter_mut() {
                     *value = read_u16(&mut reader, Some(&mut hasher))?;
                 }
@@ -663,6 +691,7 @@ impl IvfRabitqIndex {
 
         Ok(Self {
             dim,
+            padded_dim,
             metric,
             rotator,
             clusters,
