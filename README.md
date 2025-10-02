@@ -23,7 +23,7 @@ neighbour id.
 
 ```rust
 use rabitq_rs::ivf::{IvfRabitqIndex, SearchParams};
-use rabitq_rs::Metric;
+use rabitq_rs::{Metric, RotatorType};
 use rand::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,7 +33,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|_| (0..dim).map(|_| rng.gen::<f32>() * 2.0 - 1.0).collect())
         .collect();
 
-    let index = IvfRabitqIndex::train(&dataset, 64, 7, Metric::L2, 7_654)?;
+    let index = IvfRabitqIndex::train(
+        &dataset,
+        64,                          // nlist
+        7,                           // total_bits
+        Metric::L2,
+        RotatorType::FhtKacRotator,  // Use FHT for better performance
+        7_654,                       // seed
+        false                        // use_faster_config (set to true for 100-500x faster training)
+    )?;
     let params = SearchParams::new(10, 32);
     let results = index.search(&dataset[0], params)?;
 
@@ -48,7 +56,7 @@ When you already have k-means centroids and assignments (for example produced by
 
 ```rust
 use rabitq_rs::ivf::IvfRabitqIndex;
-use rabitq_rs::Metric;
+use rabitq_rs::{Metric, RotatorType};
 
 let index = IvfRabitqIndex::train_with_clusters(
     &dataset,
@@ -56,8 +64,52 @@ let index = IvfRabitqIndex::train_with_clusters(
     &assignments,    // Vec<usize> with length dataset.len()
     7,               // total quantisation bits
     Metric::L2,
+    RotatorType::FhtKacRotator,
     0xFEED_FACE,     // rotation seed
+    false,           // use_faster_config (set to true for 100-500x faster training)
 )?;
+```
+
+## Faster quantization with `faster_config`
+
+By default, RaBitQ computes an optimal scaling factor for each vector during quantization, which provides the best accuracy but can
+be slow. The `faster_config` mode precomputes a single constant scaling factor for all vectors, trading <1% accuracy for **100-500x
+faster** quantization.
+
+**When to use faster_config:**
+- Large datasets (>100K vectors) where training time is a bottleneck
+- Production scenarios where index build time matters
+- When the small accuracy loss (<1%) is acceptable
+
+**When NOT to use faster_config:**
+- Small datasets where training is already fast
+- When you need the absolute best accuracy
+- Research scenarios where precision is critical
+
+### Example usage:
+
+```rust
+use rabitq_rs::ivf::IvfRabitqIndex;
+use rabitq_rs::{Metric, RotatorType};
+
+// With faster_config enabled
+let index = IvfRabitqIndex::train(
+    &dataset,
+    4096,            // nlist
+    7,               // total_bits
+    Metric::L2,
+    RotatorType::FhtKacRotator,
+    12345,           // seed
+    true,            // use_faster_config = true (100-500x faster!)
+)?;
+
+// Or from CLI:
+// cargo run --release --bin ivf_rabitq -- \
+//     --base data.fvecs \
+//     --nlist 4096 \
+//     --bits 7 \
+//     --faster-config \
+//     --save index.bin
 ```
 
 ## Reproducing the GIST IVF + RaBitQ benchmark
@@ -96,8 +148,11 @@ Follow the same data preparation steps shown in `example.sh`:
        --centroids data/gist/gist_centroids_4096.fvecs \
        --assignments data/gist/gist_clusterids_4096.ivecs \
        --bits 3 \
+       --faster-config \
        --save data/gist/ivf_4096_3.index
    ```
+
+   Add `--faster-config` for 100-500x faster training with <1% accuracy loss.
 
 3. **Query with benchmark mode** (nprobe sweep + 5-round benchmark):
 

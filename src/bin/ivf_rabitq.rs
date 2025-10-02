@@ -221,13 +221,14 @@ fn build_index(base: &[Vec<f32>], config: &Config) -> CliResult<IvfRabitqIndex> 
             config.metric,
             RotatorType::FhtKacRotator,
             config.seed,
+            config.faster_config,
         )?
     } else if let Some(nlist) = config.nlist {
         println!(
             "Training index with built-in k-means ({} clusters)...",
             nlist
         );
-        IvfRabitqIndex::train(base, nlist, config.bits, config.metric, RotatorType::FhtKacRotator, config.seed)?
+        IvfRabitqIndex::train(base, nlist, config.bits, config.metric, RotatorType::FhtKacRotator, config.seed, config.faster_config)?
     } else {
         return Err(
             "Must specify either --load-index, --nlist, or both --centroids and --assignments"
@@ -493,6 +494,7 @@ struct Config {
     #[allow(dead_code)]
     threads: Option<usize>,
     warmup_queries: usize,
+    faster_config: bool,
 }
 
 impl Config {
@@ -515,6 +517,7 @@ impl Config {
         let mut threads = None;
         let mut warmup_queries = 10;
         let mut benchmark_mode = false;
+        let mut faster_config = false;
 
         let mut iter = args.into_iter();
         while let Some(arg) = iter.next() {
@@ -540,6 +543,7 @@ impl Config {
                 "--threads" => threads = Some(next_usize(&mut iter, &arg)?),
                 "--warmup" => warmup_queries = next_usize(&mut iter, &arg)?,
                 "--benchmark" | "--sweep" => benchmark_mode = true,
+                "--faster-config" => faster_config = true,
                 other => {
                     return Err(format!("Unknown argument: {}", other));
                 }
@@ -613,6 +617,7 @@ impl Config {
                         max_queries,
                         threads,
                         warmup_queries,
+                        faster_config,
                     })
                 } else {
                     // Loading existing index
@@ -636,6 +641,7 @@ impl Config {
                         max_queries,
                         threads,
                         warmup_queries,
+                        faster_config,
                     })
                 }
             }
@@ -659,6 +665,7 @@ impl Config {
                 max_queries,
                 threads,
                 warmup_queries,
+                faster_config,
             }),
         }
     }
@@ -715,6 +722,7 @@ fn print_usage() {
     eprintln!("  --assignments <path>  Pre-computed cluster assignments (.ivecs)");
     eprintln!("  --metric <l2|ip>      Distance metric (default: l2)");
     eprintln!("  --seed <N>            Random seed for rotation (default: 1515870004)");
+    eprintln!("  --faster-config       Use precomputed scaling factor (100-500x faster, <1% accuracy loss)");
     eprintln!("  --save <path>         Save index to file\n");
 
     eprintln!("QUERYING:");

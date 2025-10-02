@@ -111,6 +111,10 @@ python python/ivf.py \
   - Remaining bits encode magnitude refinement (ex_code)
 - **Residual quantization**: Vectors are quantized relative to their cluster centroid
 - **Distance estimation**: Pre-computed factors (`f_add`, `f_rescale`) enable fast approximate distance calculation from quantized codes
+- **`faster_config`**: Optional optimization that precomputes a constant scaling factor
+  - Default: compute optimal scaling factor per vector (slower, more accurate)
+  - With `--faster-config`: use precomputed constant (100-500x faster, <1% accuracy loss)
+  - Recommended for large datasets (>100K vectors)
 
 ## Data Files
 - Large datasets live in `data/` (git-ignored)

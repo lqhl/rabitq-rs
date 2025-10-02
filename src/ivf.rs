@@ -11,7 +11,7 @@ use rand::prelude::*;
 
 use crate::kmeans::{run_kmeans, KMeansResult};
 use crate::math::{dot, l2_distance_sqr};
-use crate::quantizer::{quantize_with_centroid, QuantizedVector};
+use crate::quantizer::{quantize_with_centroid_config, QuantizedVector, RabitqConfig};
 use crate::rotation::{DynamicRotator, RotatorType};
 use crate::{Metric, RabitqError};
 
@@ -242,6 +242,7 @@ impl IvfRabitqIndex {
         metric: Metric,
         rotator_type: RotatorType,
         seed: u64,
+        use_faster_config: bool,
     ) -> Result<Self, RabitqError> {
         if data.is_empty() {
             return Err(RabitqError::InvalidConfig(
@@ -288,6 +289,8 @@ impl IvfRabitqIndex {
             &rotated_data,
             &assignments,
             total_bits,
+            seed,
+            use_faster_config,
         )
     }
 
@@ -300,6 +303,7 @@ impl IvfRabitqIndex {
         metric: Metric,
         rotator_type: RotatorType,
         seed: u64,
+        use_faster_config: bool,
     ) -> Result<Self, RabitqError> {
         if data.is_empty() {
             return Err(RabitqError::InvalidConfig(
@@ -362,6 +366,8 @@ impl IvfRabitqIndex {
             &rotated_data,
             assignments,
             total_bits,
+            seed,
+            use_faster_config,
         )
     }
 
@@ -374,6 +380,8 @@ impl IvfRabitqIndex {
         rotated_data: &[Vec<f32>],
         assignments: &[usize],
         total_bits: usize,
+        seed: u64,
+        use_faster_config: bool,
     ) -> Result<Self, RabitqError> {
         if assignments.len() != rotated_data.len() {
             return Err(RabitqError::InvalidConfig(
@@ -394,6 +402,12 @@ impl IvfRabitqIndex {
             return Err(RabitqError::InvalidConfig("nlist must be positive"));
         }
 
+        let config = if use_faster_config {
+            RabitqConfig::faster(padded_dim, total_bits, seed)
+        } else {
+            RabitqConfig::new(total_bits)
+        };
+
         for (idx, rotated_vec) in rotated_data.iter().enumerate() {
             let cluster_id = assignments[idx];
             let cluster = clusters
@@ -402,7 +416,7 @@ impl IvfRabitqIndex {
                     "assignments reference invalid cluster ids",
                 ))?;
             let quantized =
-                quantize_with_centroid(rotated_vec, &cluster.centroid, total_bits, metric);
+                quantize_with_centroid_config(rotated_vec, &cluster.centroid, &config, metric);
             cluster.ids.push(idx);
             cluster.vectors.push(quantized);
         }

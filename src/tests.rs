@@ -64,7 +64,7 @@ fn ivf_search_recovers_identical_vectors() {
         data.push(random_vector(dim, &mut rng));
     }
 
-    let index = IvfRabitqIndex::train(&data, 32, 7, Metric::L2, RotatorType::FhtKacRotator, 7777).expect("train index");
+    let index = IvfRabitqIndex::train(&data, 32, 7, Metric::L2, RotatorType::FhtKacRotator, 7777, false).expect("train index");
     let params = SearchParams::new(1, 32);
 
     for (idx, vector) in data.iter().take(16).enumerate() {
@@ -84,7 +84,7 @@ fn fastscan_matches_naive_l2() {
         data.push(random_vector(dim, &mut rng));
     }
 
-    let index = IvfRabitqIndex::train(&data, 40, 7, Metric::L2, RotatorType::FhtKacRotator, 1357).expect("train index");
+    let index = IvfRabitqIndex::train(&data, 40, 7, Metric::L2, RotatorType::FhtKacRotator, 1357, false).expect("train index");
     let params = SearchParams::new(5, 12);
 
     let mut total_evals = 0usize;
@@ -113,7 +113,7 @@ fn fastscan_matches_naive_ip() {
     }
 
     let index =
-        IvfRabitqIndex::train(&data, 25, 6, Metric::InnerProduct, RotatorType::FhtKacRotator, 8642).expect("train index");
+        IvfRabitqIndex::train(&data, 25, 6, Metric::InnerProduct, RotatorType::FhtKacRotator, 8642, false).expect("train index");
     let params = SearchParams::new(7, 10);
 
     let mut total_evals = 0usize;
@@ -141,7 +141,7 @@ fn one_bit_search_has_no_extended_pruning() {
         data.push(random_vector(dim, &mut rng));
     }
 
-    let index = IvfRabitqIndex::train(&data, 16, 1, Metric::L2, RotatorType::FhtKacRotator, 2024).expect("train index");
+    let index = IvfRabitqIndex::train(&data, 16, 1, Metric::L2, RotatorType::FhtKacRotator, 2024, false).expect("train index");
     let params = SearchParams::new(4, 10);
 
     for query in data.iter().take(6) {
@@ -172,7 +172,7 @@ fn index_persistence_roundtrip() {
     }
 
     let index =
-        IvfRabitqIndex::train(&data, 32, 7, Metric::InnerProduct, RotatorType::FhtKacRotator, 9999).expect("train index");
+        IvfRabitqIndex::train(&data, 32, 7, Metric::InnerProduct, RotatorType::FhtKacRotator, 9999, false).expect("train index");
 
     let mut buffer = Vec::new();
     index.save_to_writer(&mut buffer).expect("serialize index");
@@ -203,7 +203,7 @@ fn index_persistence_detects_corruption() {
         data.push(random_vector(dim, &mut rng));
     }
 
-    let index = IvfRabitqIndex::train(&data, 24, 6, Metric::L2, RotatorType::FhtKacRotator, 4242).expect("train index");
+    let index = IvfRabitqIndex::train(&data, 24, 6, Metric::L2, RotatorType::FhtKacRotator, 4242, false).expect("train index");
     let mut buffer = Vec::new();
     index.save_to_writer(&mut buffer).expect("serialize index");
 
@@ -230,7 +230,7 @@ fn index_persistence_validates_vector_count() {
     }
 
     let index =
-        IvfRabitqIndex::train(&data, 16, 5, Metric::InnerProduct, RotatorType::FhtKacRotator, 9001).expect("train index");
+        IvfRabitqIndex::train(&data, 16, 5, Metric::InnerProduct, RotatorType::FhtKacRotator, 9001, false).expect("train index");
     let mut buffer = Vec::new();
     index.save_to_writer(&mut buffer).expect("serialize index");
 
@@ -384,6 +384,7 @@ fn preclustered_training_matches_naive_l2() {
         Metric::L2,
         RotatorType::FhtKacRotator,
         0xBEEF,
+        false,
     )
     .expect("train with clusters");
 
@@ -418,6 +419,7 @@ fn preclustered_training_matches_naive_ip() {
         Metric::InnerProduct,
         RotatorType::FhtKacRotator,
         0x1234_5678,
+        false,
     )
     .expect("train with clusters");
 
