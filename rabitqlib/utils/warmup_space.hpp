@@ -15,6 +15,7 @@ inline float warmup_ip_x0_q(
     size_t padded_dim,
     [[maybe_unused]] size_t _b_query = 0  // not used
 ) {
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
     const size_t num_blk = padded_dim / 64;
     size_t ip_scalar = 0;
     size_t ppc_scalar = 0;
@@ -94,6 +95,21 @@ inline float warmup_ip_x0_q(
     }
 
     return (delta * static_cast<float>(ip_scalar)) + (vl * static_cast<float>(ppc_scalar));
+#else
+    const size_t num_blk = padded_dim / 64;
+    size_t ip_scalar = 0;
+    size_t ppc_scalar = 0;
+
+    for (size_t i = 0; i < num_blk; i++) {
+        const uint64_t x = data[i];
+        ppc_scalar += __builtin_popcountll(x);
+        for (uint32_t j = 0; j < b_query; j++) {
+            ip_scalar += __builtin_popcountll(x & query[i * b_query + j]) << j;
+        }
+    }
+
+    return (delta * static_cast<float>(ip_scalar)) + (vl * static_cast<float>(ppc_scalar));
+#endif
 }
 
 template <uint32_t b_query, uint32_t padded_dim>
