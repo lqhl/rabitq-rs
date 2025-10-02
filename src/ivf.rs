@@ -295,6 +295,7 @@ impl IvfRabitqIndex {
     }
 
     /// Train an index using externally provided centroids and cluster assignments.
+    #[allow(clippy::too_many_arguments)]
     pub fn train_with_clusters(
         data: &[Vec<f32>],
         centroids: &[Vec<f32>],
@@ -371,6 +372,7 @@ impl IvfRabitqIndex {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_from_rotated(
         dim: usize,
         padded_dim: usize,

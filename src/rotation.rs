@@ -559,7 +559,7 @@ mod tests {
         let matrix_bytes = matrix_rot.serialize();
         let matrix_rot2 = MatrixRotator::deserialize(dim, dim, &matrix_bytes).unwrap();
 
-        let input = vec![1.0, 2.0, 3.0]
+        let input = [1.0, 2.0, 3.0]
             .iter()
             .cycle()
             .take(dim)
