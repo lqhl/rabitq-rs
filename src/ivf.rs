@@ -11,7 +11,7 @@ use rand::prelude::*;
 
 use crate::kmeans::{run_kmeans, KMeansResult};
 use crate::math::{dot, l2_distance_sqr};
-use crate::quantizer::{quantize_with_centroid_config, QuantizedVector, RabitqConfig};
+use crate::quantizer::{quantize_with_centroid, QuantizedVector, RabitqConfig};
 use crate::rotation::{DynamicRotator, RotatorType};
 use crate::{Metric, RabitqError};
 
@@ -163,8 +163,8 @@ impl ClusterEntry {
 struct QueryPrecomputed {
     rotated_query: Vec<f32>,
     query_norm: f32,
-    k1x_sum_q: f32,   // c1 × sum_query (precomputed)
-    kbx_sum_q: f32,   // cb × sum_query (precomputed)
+    k1x_sum_q: f32, // c1 × sum_query (precomputed)
+    kbx_sum_q: f32, // cb × sum_query (precomputed)
     binary_scale: f32,
 }
 
@@ -415,8 +415,7 @@ impl IvfRabitqIndex {
                 .ok_or(RabitqError::InvalidConfig(
                     "assignments reference invalid cluster ids",
                 ))?;
-            let quantized =
-                quantize_with_centroid_config(rotated_vec, &cluster.centroid, &config, metric);
+            let quantized = quantize_with_centroid(rotated_vec, &cluster.centroid, &config, metric);
             cluster.ids.push(idx);
             cluster.vectors.push(quantized);
         }
@@ -465,8 +464,9 @@ impl IvfRabitqIndex {
             .map_err(|_| RabitqError::InvalidPersistence("dimension exceeds persistence limits"))?;
         write_u32(&mut writer, dim, Some(&mut hasher))?;
 
-        let padded_dim = u32::try_from(self.padded_dim)
-            .map_err(|_| RabitqError::InvalidPersistence("padded_dim exceeds persistence limits"))?;
+        let padded_dim = u32::try_from(self.padded_dim).map_err(|_| {
+            RabitqError::InvalidPersistence("padded_dim exceeds persistence limits")
+        })?;
         write_u32(&mut writer, padded_dim, Some(&mut hasher))?;
 
         let metric_tag = metric_to_tag(self.metric);
@@ -611,9 +611,7 @@ impl IvfRabitqIndex {
 
         let padded_dim = read_u32(&mut reader, Some(&mut hasher))? as usize;
         if padded_dim < dim {
-            return Err(RabitqError::InvalidPersistence(
-                "padded_dim must be >= dim",
-            ));
+            return Err(RabitqError::InvalidPersistence("padded_dim must be >= dim"));
         }
 
         let metric_tag = read_u8(&mut reader, Some(&mut hasher))?;
@@ -803,7 +801,11 @@ impl IvfRabitqIndex {
 
             for (local_idx, quantized) in cluster.vectors.iter().enumerate() {
                 let mut binary_dot = 0.0f32;
-                for (&bit, &q_val) in quantized.binary_code.iter().zip(query_precomp.rotated_query.iter()) {
+                for (&bit, &q_val) in quantized
+                    .binary_code
+                    .iter()
+                    .zip(query_precomp.rotated_query.iter())
+                {
                     binary_dot += (bit as f32) * q_val;
                 }
                 // Use precomputed k1x_sum_q instead of c1 * sum_query
@@ -816,7 +818,8 @@ impl IvfRabitqIndex {
                         diff * diff
                     }
                     Metric::InnerProduct => {
-                        let max_dot = dot_query_centroid + query_precomp.query_norm * quantized.residual_norm;
+                        let max_dot =
+                            dot_query_centroid + query_precomp.query_norm * quantized.residual_norm;
                         -max_dot
                     }
                 };
@@ -855,11 +858,16 @@ impl IvfRabitqIndex {
 
                 if self.ex_bits > 0 {
                     let mut ex_dot = 0.0f32;
-                    for (&code, &q_val) in quantized.ex_code.iter().zip(query_precomp.rotated_query.iter()) {
+                    for (&code, &q_val) in quantized
+                        .ex_code
+                        .iter()
+                        .zip(query_precomp.rotated_query.iter())
+                    {
                         ex_dot += (code as f32) * q_val;
                     }
                     // Use precomputed values: binary_scale, kbx_sum_q
-                    let total_term = query_precomp.binary_scale * binary_dot + ex_dot + query_precomp.kbx_sum_q;
+                    let total_term =
+                        query_precomp.binary_scale * binary_dot + ex_dot + query_precomp.kbx_sum_q;
                     distance = quantized.f_add_ex + g_add + quantized.f_rescale_ex * total_term;
                     score = match self.metric {
                         Metric::L2 => distance,

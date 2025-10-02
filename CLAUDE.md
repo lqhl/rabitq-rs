@@ -80,7 +80,7 @@ python python/ivf.py \
   - `IvfRabitqIndex::search()`: Performs approximate nearest-neighbor search with configurable `nprobe` and `top_k`
   - Serialization: `save()` and `load()` for index persistence with CRC32 checksums
 - **`src/quantizer.rs`**: Core RaBitQ quantization logic
-  - `quantize_with_centroid()`: Quantizes residual vectors (data - centroid) into compact codes
+  - `quantize_with_centroid()`: Quantizes residual vectors (data - centroid) into compact codes with configurable `RabitqConfig`
   - Supports both 1-bit binary codes and extended multi-bit codes
   - Computes distance estimation factors (`f_add`, `f_rescale`) for L2 and inner-product metrics
 - **`src/rotation.rs`**: Random orthonormal rotation matrix generation (Haar distribution)

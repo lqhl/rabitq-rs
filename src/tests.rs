@@ -8,7 +8,7 @@ use crate::io::{
 };
 use crate::ivf::{IvfRabitqIndex, SearchParams};
 use crate::kmeans::run_kmeans;
-use crate::quantizer::{quantize_with_centroid, reconstruct_into};
+use crate::quantizer::{quantize_with_centroid, reconstruct_into, RabitqConfig};
 use crate::{Metric, RabitqError, RotatorType};
 
 fn random_vector(dim: usize, rng: &mut StdRng) -> Vec<f32> {
@@ -21,7 +21,8 @@ fn quantizer_reconstruction_is_reasonable() {
     let mut rng = StdRng::seed_from_u64(1234);
     let data = random_vector(dim, &mut rng);
     let centroid = vec![0.0f32; dim];
-    let quantized = quantize_with_centroid(&data, &centroid, 7, Metric::L2);
+    let config = RabitqConfig::new(7);
+    let quantized = quantize_with_centroid(&data, &centroid, &config, Metric::L2);
     assert_eq!(quantized.code.len(), dim, "quantized code length mismatch");
     assert_eq!(
         quantized.ex_code.len(),
@@ -64,7 +65,16 @@ fn ivf_search_recovers_identical_vectors() {
         data.push(random_vector(dim, &mut rng));
     }
 
-    let index = IvfRabitqIndex::train(&data, 32, 7, Metric::L2, RotatorType::FhtKacRotator, 7777, false).expect("train index");
+    let index = IvfRabitqIndex::train(
+        &data,
+        32,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        7777,
+        false,
+    )
+    .expect("train index");
     let params = SearchParams::new(1, 32);
 
     for (idx, vector) in data.iter().take(16).enumerate() {
@@ -84,7 +94,16 @@ fn fastscan_matches_naive_l2() {
         data.push(random_vector(dim, &mut rng));
     }
 
-    let index = IvfRabitqIndex::train(&data, 40, 7, Metric::L2, RotatorType::FhtKacRotator, 1357, false).expect("train index");
+    let index = IvfRabitqIndex::train(
+        &data,
+        40,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        1357,
+        false,
+    )
+    .expect("train index");
     let params = SearchParams::new(5, 12);
 
     let mut total_evals = 0usize;
@@ -112,8 +131,16 @@ fn fastscan_matches_naive_ip() {
         data.push(random_vector(dim, &mut rng));
     }
 
-    let index =
-        IvfRabitqIndex::train(&data, 25, 6, Metric::InnerProduct, RotatorType::FhtKacRotator, 8642, false).expect("train index");
+    let index = IvfRabitqIndex::train(
+        &data,
+        25,
+        6,
+        Metric::InnerProduct,
+        RotatorType::FhtKacRotator,
+        8642,
+        false,
+    )
+    .expect("train index");
     let params = SearchParams::new(7, 10);
 
     let mut total_evals = 0usize;
@@ -141,7 +168,16 @@ fn one_bit_search_has_no_extended_pruning() {
         data.push(random_vector(dim, &mut rng));
     }
 
-    let index = IvfRabitqIndex::train(&data, 16, 1, Metric::L2, RotatorType::FhtKacRotator, 2024, false).expect("train index");
+    let index = IvfRabitqIndex::train(
+        &data,
+        16,
+        1,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        2024,
+        false,
+    )
+    .expect("train index");
     let params = SearchParams::new(4, 10);
 
     for query in data.iter().take(6) {
@@ -171,8 +207,16 @@ fn index_persistence_roundtrip() {
         data.push(random_vector(dim, &mut rng));
     }
 
-    let index =
-        IvfRabitqIndex::train(&data, 32, 7, Metric::InnerProduct, RotatorType::FhtKacRotator, 9999, false).expect("train index");
+    let index = IvfRabitqIndex::train(
+        &data,
+        32,
+        7,
+        Metric::InnerProduct,
+        RotatorType::FhtKacRotator,
+        9999,
+        false,
+    )
+    .expect("train index");
 
     let mut buffer = Vec::new();
     index.save_to_writer(&mut buffer).expect("serialize index");
@@ -203,7 +247,16 @@ fn index_persistence_detects_corruption() {
         data.push(random_vector(dim, &mut rng));
     }
 
-    let index = IvfRabitqIndex::train(&data, 24, 6, Metric::L2, RotatorType::FhtKacRotator, 4242, false).expect("train index");
+    let index = IvfRabitqIndex::train(
+        &data,
+        24,
+        6,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        4242,
+        false,
+    )
+    .expect("train index");
     let mut buffer = Vec::new();
     index.save_to_writer(&mut buffer).expect("serialize index");
 
@@ -229,8 +282,16 @@ fn index_persistence_validates_vector_count() {
         data.push(random_vector(dim, &mut rng));
     }
 
-    let index =
-        IvfRabitqIndex::train(&data, 16, 5, Metric::InnerProduct, RotatorType::FhtKacRotator, 9001, false).expect("train index");
+    let index = IvfRabitqIndex::train(
+        &data,
+        16,
+        5,
+        Metric::InnerProduct,
+        RotatorType::FhtKacRotator,
+        9001,
+        false,
+    )
+    .expect("train index");
     let mut buffer = Vec::new();
     index.save_to_writer(&mut buffer).expect("serialize index");
 

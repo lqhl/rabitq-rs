@@ -23,7 +23,7 @@ impl RabitqConfig {
     pub fn new(total_bits: usize) -> Self {
         RabitqConfig {
             total_bits,
-            t_const: None,  // Default to precise mode
+            t_const: None, // Default to precise mode
         }
     }
 
@@ -60,19 +60,8 @@ pub struct QuantizedVector {
     pub f_rescale_ex: f32,
 }
 
-/// Quantise a vector relative to a centroid.
-pub fn quantize_with_centroid(
-    data: &[f32],
-    centroid: &[f32],
-    total_bits: usize,
-    metric: Metric,
-) -> QuantizedVector {
-    let config = RabitqConfig::new(total_bits);
-    quantize_with_centroid_config(data, centroid, &config, metric)
-}
-
 /// Quantise a vector relative to a centroid with custom configuration.
-pub fn quantize_with_centroid_config(
+pub fn quantize_with_centroid(
     data: &[f32],
     centroid: &[f32],
     config: &RabitqConfig,
@@ -198,7 +187,11 @@ fn compute_one_bit_factors(
     (f_add, f_rescale, f_error, l2_norm)
 }
 
-fn ex_bits_code_with_inv(residual: &[f32], ex_bits: usize, t_const: Option<f32>) -> (Vec<u16>, f32) {
+fn ex_bits_code_with_inv(
+    residual: &[f32],
+    ex_bits: usize,
+    t_const: Option<f32>,
+) -> (Vec<u16>, f32) {
     let dim = residual.len();
     let mut normalized_abs: Vec<f32> = residual.iter().map(|x| x.abs()).collect();
     let norm = normalized_abs.iter().map(|x| x * x).sum::<f32>().sqrt();
