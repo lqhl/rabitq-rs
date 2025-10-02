@@ -27,5 +27,9 @@ rand = { version = "0.8", features = ["std"] }
 name = "rabitq_rs"
 path = "src/lib.rs"
 
+[[bin]]
+name = "ivf_rabitq"
+path = "src/bin/ivf_rabitq.rs"
+
 [package.metadata.docs.rs]
 all-features = true

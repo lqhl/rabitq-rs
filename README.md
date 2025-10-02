@@ -12,7 +12,7 @@ behavior of the C++ [RaBitQ Library](https://github.com/VectorDB-NTU/RaBitQ-Libr
   library.
 - **Dataset utilities** – the new `rabitq_rs::io` module parses `.fvecs` and `.ivecs` files, including convenience helpers for
   cluster-id lists and ground-truth tables.
-- **Command-line evaluation** – `cargo run --bin gist` builds an IVF + RaBitQ index from the GIST dataset and reports recall and
+- **Command-line evaluation** – `cargo run --bin ivf_rabitq` builds an IVF + RaBitQ index from any .fvecs dataset and reports recall and
   throughput for a configurable `nprobe` / `top-k` budget.
 
 ## Quick start
@@ -75,11 +75,9 @@ Follow the same data preparation steps shown in `example.sh`:
    If FTP is blocked in your environment, fetch the files from an alternative mirror and place them under `data/gist/` with the
    same filenames (`gist_base.fvecs`, `gist_query.fvecs`, `gist_groundtruth.ivecs`).
 
-After the dataset is in place you can choose between two training workflows:
+### Typical Workflow (with FAISS clustering)
 
-### Option 1: Use pre-computed clusters (FAISS-compatible)
-
-1. **Cluster the base vectors** – the helper script mirrors the FAISS call used by the C++ sample:
+1. **Cluster the base vectors** using the Python helper:
 
    ```bash
    python python/ivf.py \
@@ -90,88 +88,70 @@ After the dataset is in place you can choose between two training workflows:
        l2
    ```
 
-   (Swap `l2` for `ip` if you plan to evaluate inner-product similarity.)
-
-2. **Build and evaluate the Rust index** – the CLI supports limiting the number of base vectors and queries so you can perform a
-   smoke test without loading the full 1M-vector dataset:
+2. **Build the index**:
 
    ```bash
-   cargo run --release --bin gist -- \
+   cargo run --release --bin ivf_rabitq -- \
        --base data/gist/gist_base.fvecs \
        --centroids data/gist/gist_centroids_4096.fvecs \
        --assignments data/gist/gist_clusterids_4096.ivecs \
-       --queries data/gist/gist_query.fvecs \
-       --groundtruth data/gist/gist_groundtruth.ivecs \
-       --bits 7 \
-       --top-k 100 \
-       --nprobe 1024 \
-       --metric l2 \
-       --max-base 1000000 \
-       --max-queries 200 \
-       --seed 1337
+       --bits 3 \
+       --save data/gist/ivf_4096_3.index
    ```
 
-   The command prints the construction time, the evaluated recall@`top-k`, and the observed queries-per-second. Remove the
-   `--max-base` / `--max-queries` limits to run the full benchmark once you are comfortable with the workflow.
+3. **Query with benchmark mode** (nprobe sweep + 5-round benchmark):
 
-### Option 2: Train everything in Rust (no pre-computed centroids)
+   ```bash
+   cargo run --release --bin ivf_rabitq -- \
+       --load data/gist/ivf_4096_3.index \
+       --queries data/gist/gist_query.fvecs \
+       --gt data/gist/gist_groundtruth.ivecs \
+       --benchmark
+   ```
 
-Skip the Python/FAISS clustering step and let the crate execute k-means internally. Provide the desired IVF list count via
-`--nlist`:
+   This performs an automatic nprobe sweep (5, 10, 20...15000), stops when recall plateaus, then runs a 5-round benchmark
+   and outputs a table: `nprobe | QPS | recall`.
 
-```bash
-cargo run --release --bin gist -- \
-    --base data/gist/gist_base.fvecs \
-    --bits 7 \
-    --nlist 4096 \
-    --queries data/gist/gist_query.fvecs \
-    --groundtruth data/gist/gist_groundtruth.ivecs \
-    --top-k 100 \
-    --nprobe 1024 \
-    --metric l2 \
-    --max-base 1000000 \
-    --max-queries 200 \
-    --seed 1337
-```
+### Alternative: Build with Rust k-means
 
-The command mirrors the pre-computed flow but performs clustering in-process using the Rust `IvfRabitqIndex::train` helper. Expect
-the build phase to take longer than the pre-clustered path because the binary runs k-means internally. Once the index is trained
-the evaluation output matches the format of the pre-computed mode.
-
-All CLI options are documented in `cargo run --bin gist -- --help`.
-
-### Persisting trained indexes
-
-Use the persistence hooks to avoid retraining between benchmarking runs:
+Skip Python clustering and use built-in k-means:
 
 ```bash
-cargo run --release --bin gist -- \
+cargo run --release --bin ivf_rabitq -- \
     --base data/gist/gist_base.fvecs \
-    --bits 7 \
     --nlist 4096 \
-    --queries data/gist/gist_query.fvecs \
-    --groundtruth data/gist/gist_groundtruth.ivecs \
-    --top-k 100 \
-    --nprobe 1024 \
-    --metric l2 \
-    --max-base 1000000 \
-    --max-queries 200 \
-    --seed 1337 \
-    --save-index data/gist/gist_rbq.idx
-
-cargo run --release --bin gist -- \
-    --base data/gist/gist_base.fvecs \
-    --queries data/gist/gist_query.fvecs \
-    --groundtruth data/gist/gist_groundtruth.ivecs \
-    --top-k 100 \
-    --nprobe 1024 \
-    --metric l2 \
-    --max-base 1000000 \
-    --max-queries 200 \
-    --load-index data/gist/gist_rbq.idx
+    --bits 3 \
+    --save data/gist/index.bin
 ```
 
-The first command trains with the Rust pipeline, writes the persisted index, and records the benchmark. The second command reuses the saved index for subsequent recall sweeps or profiling runs.
+### Single-Config Evaluation
+
+For a specific nprobe value (without sweep):
+
+```bash
+cargo run --release --bin ivf_rabitq -- \
+    --load data/gist/index.bin \
+    --queries data/gist/gist_query.fvecs \
+    --gt data/gist/gist_groundtruth.ivecs \
+    --nprobe 1024 \
+    --top-k 100
+```
+
+This evaluates at the specified nprobe and reports recall, QPS, and latency percentiles.
+
+### Build and Query in One Command
+
+```bash
+cargo run --release --bin ivf_rabitq -- \
+    --base data/gist/gist_base.fvecs \
+    --nlist 4096 \
+    --bits 3 \
+    --queries data/gist/gist_query.fvecs \
+    --gt data/gist/gist_groundtruth.ivecs \
+    --benchmark
+```
+
+All CLI options are documented in `cargo run --bin ivf_rabitq -- --help`.
 
 ## Testing and linting
 
@@ -220,13 +200,13 @@ are immutable, so double-check the README and API docs before releasing.
 
 ```text
 src/
-  bin/gist.rs     # CLI for building & evaluating IVF + RaBitQ on GIST
-  io.rs           # .fvecs/.ivecs readers and helpers
-  ivf.rs          # IVF + RaBitQ searcher and training routines
-  kmeans.rs       # Lightweight k-means used for in-crate training
-  math.rs         # Vector math helpers
-  quantizer.rs    # Core RaBitQ quantisation logic
-  rotation.rs     # Random orthonormal rotator
+  bin/ivf_rabitq.rs  # CLI for building & evaluating IVF + RaBitQ on any .fvecs dataset
+  io.rs              # .fvecs/.ivecs readers and helpers
+  ivf.rs             # IVF + RaBitQ searcher and training routines
+  kmeans.rs          # Lightweight k-means used for in-crate training
+  math.rs            # Vector math helpers
+  quantizer.rs       # Core RaBitQ quantisation logic
+  rotation.rs        # Random orthonormal rotator
 ```
 
 Refer to `README.origin.md` for the original upstream documentation.

@@ -14,47 +14,50 @@ cargo clippy --all-targets --all-features    # Lint (must pass cleanly)
 cargo test                                   # Run unit and integration tests
 ```
 
-### Benchmark Evaluation (GIST binary)
+### Benchmark Evaluation (ivf_rabitq binary)
 ```bash
-# Full benchmark run
-cargo run --release --bin gist -- \
+# Build index
+cargo run --release --bin ivf_rabitq -- \
     --base data/gist/gist_base.fvecs \
     --centroids data/gist/gist_centroids_4096.fvecs \
     --assignments data/gist/gist_clusterids_4096.ivecs \
+    --bits 3 \
+    --save data/gist/index.bin
+
+# Query with benchmark mode (nprobe sweep + 5 rounds)
+cargo run --release --bin ivf_rabitq -- \
+    --load data/gist/index.bin \
     --queries data/gist/gist_query.fvecs \
-    --groundtruth data/gist/gist_groundtruth.ivecs \
-    --bits 7 \
-    --top-k 100 \
+    --gt data/gist/gist_groundtruth.ivecs \
+    --benchmark
+
+# Query at specific nprobe (no sweep)
+cargo run --release --bin ivf_rabitq -- \
+    --load data/gist/index.bin \
+    --queries data/gist/gist_query.fvecs \
+    --gt data/gist/gist_groundtruth.ivecs \
     --nprobe 1024 \
-    --metric l2 \
-    --seed 1337
+    --top-k 100
+
+# Build and query in one command
+cargo run --release --bin ivf_rabitq -- \
+    --base data/gist/gist_base.fvecs \
+    --nlist 4096 \
+    --bits 3 \
+    --queries data/gist/gist_query.fvecs \
+    --gt data/gist/gist_groundtruth.ivecs \
+    --benchmark
 
 # Smoke test with limited data
-cargo run --release --bin gist -- \
+cargo run --release --bin ivf_rabitq -- \
     --base data/gist/gist_base.fvecs \
     --nlist 4096 \
+    --bits 3 \
     --queries data/gist/gist_query.fvecs \
-    --groundtruth data/gist/gist_groundtruth.ivecs \
-    --bits 7 \
-    --top-k 100 \
-    --nprobe 1024 \
-    --metric l2 \
+    --gt data/gist/gist_groundtruth.ivecs \
     --max-base 1000 \
-    --max-queries 50
-
-# Save/load index for repeated benchmarks
-cargo run --release --bin gist -- \
-    --base data/gist/gist_base.fvecs \
-    --nlist 4096 \
-    --bits 7 \
-    --metric l2 \
-    --save-index data/gist/gist_rbq.idx \
-    ...
-
-cargo run --release --bin gist -- \
-    --load-index data/gist/gist_rbq.idx \
-    --queries data/gist/gist_query.fvecs \
-    ...
+    --max-queries 50 \
+    --nprobe 64
 ```
 
 ### Python Helper (Pre-clustering with FAISS)
@@ -84,7 +87,10 @@ python python/ivf.py \
 - **`src/kmeans.rs`**: Lightweight k-means implementation for in-crate training
 - **`src/math.rs`**: Low-level vector operations (dot product, L2 distance, subtraction, norms)
 - **`src/io.rs`**: Parsers for `.fvecs` and `.ivecs` file formats (GIST/SIFT datasets)
-- **`src/bin/gist.rs`**: CLI for benchmarking IVF + RaBitQ on GIST dataset
+- **`src/bin/ivf_rabitq.rs`**: CLI for benchmarking IVF + RaBitQ on any .fvecs dataset
+  - Three modes: Index, Query, or IndexAndQuery (auto-detected from arguments)
+  - `--benchmark` flag enables C++-style nprobe sweep + 5-round benchmark
+  - Without `--benchmark`, evaluates at specific nprobe with detailed latency stats
 - **`src/tests.rs`**: Regression tests with seeded RNGs for deterministic validation
 
 ### Training Workflows
