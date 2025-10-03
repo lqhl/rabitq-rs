@@ -273,13 +273,21 @@ impl IvfRabitqIndex {
 
         let rotator = DynamicRotator::new(dim, rotator_type, seed);
         let padded_dim = rotator.padded_dim();
+
+        println!("Rotating vectors...");
         let rotated_data: Vec<Vec<f32>> = data.par_iter().map(|v| rotator.rotate(v)).collect();
 
+        println!(
+            "Training k-means ({} clusters, {} iterations)...",
+            nlist, 30
+        );
         let mut rng = StdRng::seed_from_u64(seed ^ 0x5a5a_5a5a5a5a5a5a);
         let KMeansResult {
             centroids,
             assignments,
+            ..
         } = run_kmeans(&rotated_data, nlist, 30, &mut rng);
+        println!("K-means training complete");
 
         Self::build_from_rotated(
             dim,
@@ -423,6 +431,11 @@ impl IvfRabitqIndex {
         }
 
         // Parallelize quantization across clusters and within clusters
+        println!("Quantizing vectors...");
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let progress_counter = AtomicUsize::new(0);
+        let total_clusters = clusters.len();
+
         let cluster_data: Vec<(Vec<usize>, Vec<QuantizedVector>)> = clusters
             .par_iter()
             .enumerate()
@@ -439,9 +452,21 @@ impl IvfRabitqIndex {
                         )
                     })
                     .collect();
+
+                let completed = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                if completed % (total_clusters / 20).max(1) == 0 || completed == total_clusters {
+                    println!(
+                        "  Quantized {}/{} clusters ({:.1}%)",
+                        completed,
+                        total_clusters,
+                        100.0 * completed as f64 / total_clusters as f64
+                    );
+                }
+
                 (indices.clone(), quantized_vectors)
             })
             .collect();
+        println!("Quantization complete");
 
         // Populate clusters with results
         for (cluster_id, (indices, quantized_vectors)) in cluster_data.into_iter().enumerate() {
