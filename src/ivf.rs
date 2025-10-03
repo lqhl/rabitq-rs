@@ -8,6 +8,7 @@ use std::path::Path;
 use crc32fast::Hasher;
 
 use rand::prelude::*;
+use rayon::prelude::*;
 
 use crate::kmeans::{run_kmeans, KMeansResult};
 use crate::math::{dot, l2_distance_sqr};
@@ -272,7 +273,7 @@ impl IvfRabitqIndex {
 
         let rotator = DynamicRotator::new(dim, rotator_type, seed);
         let padded_dim = rotator.padded_dim();
-        let rotated_data: Vec<Vec<f32>> = data.iter().map(|v| rotator.rotate(v)).collect();
+        let rotated_data: Vec<Vec<f32>> = data.par_iter().map(|v| rotator.rotate(v)).collect();
 
         let mut rng = StdRng::seed_from_u64(seed ^ 0x5a5a_5a5a5a5a5a5a);
         let KMeansResult {
@@ -354,9 +355,9 @@ impl IvfRabitqIndex {
 
         let rotator = DynamicRotator::new(dim, rotator_type, seed);
         let padded_dim = rotator.padded_dim();
-        let rotated_data: Vec<Vec<f32>> = data.iter().map(|v| rotator.rotate(v)).collect();
+        let rotated_data: Vec<Vec<f32>> = data.par_iter().map(|v| rotator.rotate(v)).collect();
         let rotated_centroids: Vec<Vec<f32>> =
-            centroids.iter().map(|c| rotator.rotate(c)).collect();
+            centroids.par_iter().map(|c| rotator.rotate(c)).collect();
 
         Self::build_from_rotated(
             dim,
@@ -410,16 +411,42 @@ impl IvfRabitqIndex {
             RabitqConfig::new(total_bits)
         };
 
-        for (idx, rotated_vec) in rotated_data.iter().enumerate() {
-            let cluster_id = assignments[idx];
-            let cluster = clusters
-                .get_mut(cluster_id)
-                .ok_or(RabitqError::InvalidConfig(
+        // Group vector indices by cluster
+        let mut cluster_indices: Vec<Vec<usize>> = vec![Vec::new(); clusters.len()];
+        for (idx, &cluster_id) in assignments.iter().enumerate() {
+            if cluster_id >= clusters.len() {
+                return Err(RabitqError::InvalidConfig(
                     "assignments reference invalid cluster ids",
-                ))?;
-            let quantized = quantize_with_centroid(rotated_vec, &cluster.centroid, &config, metric);
-            cluster.ids.push(idx);
-            cluster.vectors.push(quantized);
+                ));
+            }
+            cluster_indices[cluster_id].push(idx);
+        }
+
+        // Parallelize quantization across clusters and within clusters
+        let cluster_data: Vec<(Vec<usize>, Vec<QuantizedVector>)> = clusters
+            .par_iter()
+            .enumerate()
+            .map(|(cluster_id, cluster)| {
+                let indices = &cluster_indices[cluster_id];
+                let quantized_vectors: Vec<QuantizedVector> = indices
+                    .par_iter()
+                    .map(|&idx| {
+                        quantize_with_centroid(
+                            &rotated_data[idx],
+                            &cluster.centroid,
+                            &config,
+                            metric,
+                        )
+                    })
+                    .collect();
+                (indices.clone(), quantized_vectors)
+            })
+            .collect();
+
+        // Populate clusters with results
+        for (cluster_id, (indices, quantized_vectors)) in cluster_data.into_iter().enumerate() {
+            clusters[cluster_id].ids = indices;
+            clusters[cluster_id].vectors = quantized_vectors;
         }
 
         Ok(Self {
