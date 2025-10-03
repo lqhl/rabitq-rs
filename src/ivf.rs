@@ -23,12 +23,108 @@ pub struct SearchParams {
     pub nprobe: usize,
 }
 
-fn write_u16<W: Write>(writer: &mut W, value: u16, hasher: Option<&mut Hasher>) -> io::Result<()> {
-    let bytes = value.to_le_bytes();
-    if let Some(h) = hasher {
-        h.update(&bytes);
+/// Pack binary codes (1 bit per element) into bytes
+fn pack_binary_code(binary_code: &[u8]) -> Vec<u8> {
+    let num_bytes = (binary_code.len() + 7) / 8;
+    let mut packed = vec![0u8; num_bytes];
+    for (i, &bit) in binary_code.iter().enumerate() {
+        if bit != 0 {
+            packed[i / 8] |= 1 << (i % 8);
+        }
     }
-    writer.write_all(&bytes)
+    packed
+}
+
+/// Unpack binary codes from packed bytes
+fn unpack_binary_code(packed: &[u8], dim: usize) -> Vec<u8> {
+    let mut binary_code = vec![0u8; dim];
+    for i in 0..dim {
+        if (packed[i / 8] & (1 << (i % 8))) != 0 {
+            binary_code[i] = 1;
+        }
+    }
+    binary_code
+}
+
+/// Pack ex codes (2 bits per element) into bytes
+fn pack_ex_code(ex_code: &[u16], ex_bits: u8) -> Vec<u8> {
+    if ex_bits == 0 {
+        return Vec::new();
+    }
+    let bits_per_element = ex_bits as usize;
+    let total_bits = ex_code.len() * bits_per_element;
+    let num_bytes = (total_bits + 7) / 8;
+    let mut packed = vec![0u8; num_bytes];
+
+    for (i, &code) in ex_code.iter().enumerate() {
+        let bit_offset = i * bits_per_element;
+        let byte_offset = bit_offset / 8;
+        let bit_in_byte = bit_offset % 8;
+
+        // Handle potential multi-byte span
+        let mut remaining_bits = bits_per_element;
+        let mut remaining_code = code;
+        let mut current_byte = byte_offset;
+        let mut current_bit = bit_in_byte;
+
+        while remaining_bits > 0 {
+            let bits_in_current_byte = (8 - current_bit).min(remaining_bits);
+            let mask = ((1u16 << bits_in_current_byte) - 1) as u8;
+            packed[current_byte] |= ((remaining_code & mask as u16) as u8) << current_bit;
+
+            remaining_code >>= bits_in_current_byte;
+            remaining_bits -= bits_in_current_byte;
+            current_byte += 1;
+            current_bit = 0;
+        }
+    }
+    packed
+}
+
+/// Unpack ex codes from packed bytes
+fn unpack_ex_code(packed: &[u8], dim: usize, ex_bits: u8) -> Vec<u16> {
+    if ex_bits == 0 {
+        return vec![0u16; dim];
+    }
+    let mut ex_code = vec![0u16; dim];
+    let bits_per_element = ex_bits as usize;
+
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..dim {
+        let bit_offset = i * bits_per_element;
+        let byte_offset = bit_offset / 8;
+        let bit_in_byte = bit_offset % 8;
+
+        let mut code = 0u16;
+        let mut remaining_bits = bits_per_element;
+        let mut current_byte = byte_offset;
+        let mut current_bit = bit_in_byte;
+        let mut shift = 0;
+
+        while remaining_bits > 0 {
+            let bits_in_current_byte = (8 - current_bit).min(remaining_bits);
+            let mask = ((1u16 << bits_in_current_byte) - 1) as u8;
+            let bits = ((packed[current_byte] >> current_bit) & mask) as u16;
+            code |= bits << shift;
+
+            shift += bits_in_current_byte;
+            remaining_bits -= bits_in_current_byte;
+            current_byte += 1;
+            current_bit = 0;
+        }
+
+        ex_code[i] = code;
+    }
+    ex_code
+}
+
+/// Reconstruct full code from binary_code and ex_code
+fn reconstruct_code(binary_code: &[u8], ex_code: &[u16], ex_bits: u8) -> Vec<u16> {
+    binary_code
+        .iter()
+        .zip(ex_code.iter())
+        .map(|(&bin, &ex)| ex + ((bin as u16) << ex_bits))
+        .collect()
 }
 
 fn write_u32<W: Write>(writer: &mut W, value: u32, hasher: Option<&mut Hasher>) -> io::Result<()> {
@@ -141,7 +237,7 @@ pub(crate) struct SearchDiagnostics {
 }
 
 const PERSIST_MAGIC: [u8; 4] = *b"RBQ1";
-const PERSIST_VERSION: u32 = 1;
+const PERSIST_VERSION: u32 = 2; // V2: bit-packed binary_code and ex_code
 
 #[derive(Debug, Clone)]
 struct ClusterEntry {
@@ -593,8 +689,7 @@ impl IvfRabitqIndex {
             }
 
             for vector in &cluster.vectors {
-                if vector.code.len() != self.padded_dim
-                    || vector.binary_code.len() != self.padded_dim
+                if vector.binary_code.len() != self.padded_dim
                     || vector.ex_code.len() != self.padded_dim
                 {
                     return Err(RabitqError::InvalidPersistence(
@@ -602,17 +697,17 @@ impl IvfRabitqIndex {
                     ));
                 }
 
-                for &value in &vector.code {
-                    write_u16(&mut writer, value, Some(&mut hasher))?;
-                }
+                // V2: Bit-packed binary_code (1 bit per element)
+                let packed_binary = pack_binary_code(&vector.binary_code);
+                writer.write_all(&packed_binary)?;
+                hasher.update(&packed_binary);
 
-                writer.write_all(&vector.binary_code)?;
-                hasher.update(&vector.binary_code);
+                // V2: Bit-packed ex_code (ex_bits per element)
+                let packed_ex = pack_ex_code(&vector.ex_code, self.ex_bits as u8);
+                writer.write_all(&packed_ex)?;
+                hasher.update(&packed_ex);
 
-                for &value in &vector.ex_code {
-                    write_u16(&mut writer, value, Some(&mut hasher))?;
-                }
-
+                // Metadata (8 × f32 = 32 bytes, unchanged)
                 write_f32(&mut writer, vector.delta, Some(&mut hasher))?;
                 write_f32(&mut writer, vector.vl, Some(&mut hasher))?;
                 write_f32(&mut writer, vector.f_add, Some(&mut hasher))?;
@@ -648,7 +743,7 @@ impl IvfRabitqIndex {
         }
 
         let version = read_u32(&mut reader, None)?;
-        if version != PERSIST_VERSION {
+        if version != 1 && version != 2 {
             return Err(RabitqError::InvalidPersistence(
                 "unsupported index format version",
             ));
@@ -718,19 +813,46 @@ impl IvfRabitqIndex {
 
             let mut vectors = Vec::with_capacity(entry_count);
             for _ in 0..entry_count {
-                let mut code = vec![0u16; padded_dim];
-                for value in code.iter_mut() {
-                    *value = read_u16(&mut reader, Some(&mut hasher))?;
-                }
+                let (code, binary_code, ex_code) = if version == 1 {
+                    // V1: unpacked format
+                    let mut code = vec![0u16; padded_dim];
+                    for value in code.iter_mut() {
+                        *value = read_u16(&mut reader, Some(&mut hasher))?;
+                    }
 
-                let mut binary_code = vec![0u8; padded_dim];
-                reader.read_exact(&mut binary_code)?;
-                hasher.update(&binary_code);
+                    let mut binary_code = vec![0u8; padded_dim];
+                    reader.read_exact(&mut binary_code)?;
+                    hasher.update(&binary_code);
 
-                let mut ex_code = vec![0u16; padded_dim];
-                for value in ex_code.iter_mut() {
-                    *value = read_u16(&mut reader, Some(&mut hasher))?;
-                }
+                    let mut ex_code = vec![0u16; padded_dim];
+                    for value in ex_code.iter_mut() {
+                        *value = read_u16(&mut reader, Some(&mut hasher))?;
+                    }
+
+                    (code, binary_code, ex_code)
+                } else {
+                    // V2: bit-packed format
+                    let binary_packed_size = (padded_dim + 7) / 8;
+                    let mut binary_packed = vec![0u8; binary_packed_size];
+                    reader.read_exact(&mut binary_packed)?;
+                    hasher.update(&binary_packed);
+                    let binary_code = unpack_binary_code(&binary_packed, padded_dim);
+
+                    let ex_packed_size = if ex_bits > 0 {
+                        ((padded_dim * ex_bits) + 7) / 8
+                    } else {
+                        0
+                    };
+                    let mut ex_packed = vec![0u8; ex_packed_size];
+                    reader.read_exact(&mut ex_packed)?;
+                    hasher.update(&ex_packed);
+                    let ex_code = unpack_ex_code(&ex_packed, padded_dim, ex_bits as u8);
+
+                    // Reconstruct full code
+                    let code = reconstruct_code(&binary_code, &ex_code, ex_bits as u8);
+
+                    (code, binary_code, ex_code)
+                };
 
                 let delta = read_f32(&mut reader, Some(&mut hasher))?;
                 let vl = read_f32(&mut reader, Some(&mut hasher))?;
