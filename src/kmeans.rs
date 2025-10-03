@@ -64,7 +64,17 @@ pub fn run_kmeans_with_config(data: &[Vec<f32>], k: usize, config: KMeansConfig)
     let total_points = data.len();
 
     let flattened = flatten_dataset(data, total_points * dim);
+    run_kmeans_flat(&flattened, total_points, dim, k, config)
+}
 
+/// Internal k-means implementation that works with pre-flattened data
+fn run_kmeans_flat(
+    flattened: &[f32],
+    total_points: usize,
+    dim: usize,
+    k: usize,
+    config: KMeansConfig,
+) -> KMeansResult {
     // Select training subset
     let mut sampling_rng = StdRng::seed_from_u64(config.seed);
     let training_indices = select_training_indices(
@@ -73,8 +83,18 @@ pub fn run_kmeans_with_config(data: &[Vec<f32>], k: usize, config: KMeansConfig)
         config.max_points_per_centroid,
         &mut sampling_rng,
     );
-    let training_data = gather_rows(&flattened, &training_indices, dim);
+
+    // Optimization: if training uses all points, use reference to avoid copy
     let training_rows = training_indices.len();
+    let training_data_owned;
+    let training_data: &[f32] = if training_rows == total_points {
+        // Full dataset training: use direct reference (saves 3.66GB for k=4096)
+        flattened
+    } else {
+        // Sampled training: gather subset
+        training_data_owned = gather_rows(flattened, &training_indices, dim);
+        &training_data_owned
+    };
 
     println!(
         "  K-means: {} points, {} clusters, {} iterations, {} restarts",
@@ -91,13 +111,16 @@ pub fn run_kmeans_with_config(data: &[Vec<f32>], k: usize, config: KMeansConfig)
         let mut redo_rng = StdRng::seed_from_u64(redo_seed);
 
         // Random Forgy initialization
+        #[allow(clippy::needless_borrow)]
         let mut centroids =
             initialize_centroids_random(&training_data, training_rows, dim, k, &mut redo_rng);
 
         let mut training_assignments = vec![0usize; training_rows];
+        #[allow(clippy::needless_borrow)]
         let norms = compute_norms(&training_data, training_rows, dim);
 
         // Lloyd iterations
+        #[allow(clippy::needless_borrow)]
         run_lloyd_iterations(
             &mut centroids,
             config.niter,
@@ -112,13 +135,13 @@ pub fn run_kmeans_with_config(data: &[Vec<f32>], k: usize, config: KMeansConfig)
         );
 
         // Assign full dataset and compute objective
-        let full_norms = compute_norms(&flattened, total_points, dim);
+        let full_norms = compute_norms(flattened, total_points, dim);
         let mut centroid_col = Vec::with_capacity(dim * k);
         let mut centroid_norms = Vec::with_capacity(k);
         rebuild_centroid_views(&centroids, k, dim, &mut centroid_col, &mut centroid_norms);
 
         let assignments = assign_full_dataset(
-            &flattened,
+            flattened,
             &full_norms,
             k,
             dim,
@@ -127,7 +150,7 @@ pub fn run_kmeans_with_config(data: &[Vec<f32>], k: usize, config: KMeansConfig)
             config.decode_block_size,
         );
 
-        let objective = compute_objective(&flattened, &centroids, &assignments, total_points, dim);
+        let objective = compute_objective(flattened, &centroids, &assignments, total_points, dim);
 
         let centroids_vec = centroids.chunks(dim).map(|c| c.to_vec()).collect();
         let result = KMeansResult {
@@ -350,14 +373,66 @@ struct AssignmentSummary {
     candidates: Vec<(f32, usize)>,
 }
 
-#[derive(Debug)]
-struct ChunkResult {
-    start: usize,
-    len: usize,
-    assignments: Vec<usize>,
+/// Thread-local buffer for reusing allocations during GEMM operations
+struct KMeansBuffer {
+    dot_products: Vec<f32>,
+    sums: Vec<f32>,
+}
+
+impl KMeansBuffer {
+    fn new() -> Self {
+        Self {
+            dot_products: Vec::new(),
+            sums: Vec::new(),
+        }
+    }
+
+    fn resize_for_chunk(&mut self, len: usize, k: usize, dim: usize) {
+        self.dot_products.clear();
+        self.dot_products.resize(len * k, 0.0);
+        self.sums.clear();
+        self.sums.resize(k * dim, 0.0);
+    }
+}
+
+/// Thread-local state for fold+reduce streaming assignment
+struct ThreadLocalState {
+    buffer: KMeansBuffer,
     counts: Vec<usize>,
     sums: Vec<f32>,
     candidates: Vec<(f32, usize)>,
+    assignments: Vec<(usize, Vec<usize>)>,
+}
+
+impl ThreadLocalState {
+    fn new(k: usize, dim: usize) -> Self {
+        Self {
+            buffer: KMeansBuffer::new(),
+            counts: vec![0; k],
+            sums: vec![0.0; k * dim],
+            candidates: Vec::new(),
+            assignments: Vec::new(),
+        }
+    }
+
+    fn merge_from(&mut self, other: Self, k: usize, dim: usize) {
+        for cluster in 0..k {
+            self.counts[cluster] += other.counts[cluster];
+            for d in 0..dim {
+                self.sums[cluster * dim + d] += other.sums[cluster * dim + d];
+            }
+        }
+        self.candidates.extend(other.candidates);
+        self.assignments.extend(other.assignments);
+    }
+
+    fn into_summary(self) -> AssignmentSummary {
+        AssignmentSummary {
+            counts: self.counts,
+            sums: self.sums,
+            candidates: self.candidates,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -374,134 +449,101 @@ fn assign_points_for_update(
     let rows = norms.len();
     let num_chunks = (rows + decode_block_size - 1) / decode_block_size;
 
-    let results: Vec<ChunkResult> = (0..num_chunks)
+    // fold+reduce: each thread maintains its own state with reusable buffer
+    let mut state = (0..num_chunks)
         .into_par_iter()
-        .map(|chunk_idx| {
-            let start = chunk_idx * decode_block_size;
-            let end = ((chunk_idx + 1) * decode_block_size).min(rows);
-            let len = end - start;
-            let data_chunk = &data[start * dim..end * dim];
-            let norms_chunk = &norms[start..end];
-            compute_chunk_assignments(
-                start,
-                data_chunk,
-                norms_chunk,
-                len,
-                k,
-                dim,
-                centroid_col,
-                centroid_norms,
-            )
-        })
-        .collect();
+        .fold(
+            || ThreadLocalState::new(k, dim),
+            |mut state, chunk_idx| {
+                let start = chunk_idx * decode_block_size;
+                let end = ((chunk_idx + 1) * decode_block_size).min(rows);
+                let len = end - start;
+                let data_chunk = &data[start * dim..end * dim];
+                let norms_chunk = &norms[start..end];
 
-    let mut counts = vec![0usize; k];
-    let mut sums = vec![0.0f32; k * dim];
-    let mut candidates = Vec::new();
+                // Resize buffer for this chunk
+                state.buffer.resize_for_chunk(len, k, dim);
 
-    for result in results {
-        let ChunkResult {
-            start,
-            len,
-            assignments: chunk_assignments,
-            counts: chunk_counts,
-            sums: chunk_sums,
-            candidates: mut chunk_candidates,
-        } = result;
-        let end = start + len;
-        assignments[start..end].copy_from_slice(&chunk_assignments);
-        for cluster in 0..k {
-            counts[cluster] += chunk_counts[cluster];
-            let dst_offset = cluster * dim;
-            let src_offset = cluster * dim;
-            for d in 0..dim {
-                sums[dst_offset + d] += chunk_sums[src_offset + d];
-            }
-        }
-        candidates.append(&mut chunk_candidates);
-    }
+                // Compute GEMM: dot_products = data_chunk @ centroids^T
+                unsafe {
+                    sgemm(
+                        len,
+                        dim,
+                        k,
+                        1.0,
+                        data_chunk.as_ptr(),
+                        dim as isize,
+                        1,
+                        centroid_col.as_ptr(),
+                        k as isize,
+                        1,
+                        0.0,
+                        state.buffer.dot_products.as_mut_ptr(),
+                        k as isize,
+                        1,
+                    );
+                }
 
-    AssignmentSummary {
-        counts,
-        sums,
-        candidates,
-    }
-}
+                // Compute assignments and accumulate into state
+                let mut chunk_assignments = Vec::with_capacity(len);
+                let mut chunk_candidates: Vec<(f32, usize)> = Vec::new();
 
-#[allow(clippy::too_many_arguments)]
-fn compute_chunk_assignments(
-    start: usize,
-    data_chunk: &[f32],
-    norms_chunk: &[f32],
-    len: usize,
-    k: usize,
-    dim: usize,
-    centroid_col: &[f32],
-    centroid_norms: &[f32],
-) -> ChunkResult {
-    let mut dot_products = vec![0.0f32; len * k];
-    unsafe {
-        sgemm(
-            len,
-            dim,
-            k,
-            1.0,
-            data_chunk.as_ptr(),
-            dim as isize,
-            1,
-            centroid_col.as_ptr(),
-            k as isize,
-            1,
-            0.0,
-            dot_products.as_mut_ptr(),
-            k as isize,
-            1,
+                for row in 0..len {
+                    let norm = norms_chunk[row];
+                    let mut best_cluster = 0usize;
+                    let mut best_distance = f32::INFINITY;
+
+                    #[allow(clippy::needless_range_loop)]
+                    for cluster in 0..k {
+                        let dot = state.buffer.dot_products[row * k + cluster];
+                        let mut distance = norm + centroid_norms[cluster] - 2.0 * dot;
+                        if distance < 0.0 {
+                            distance = 0.0;
+                        }
+                        if distance < best_distance {
+                            best_distance = distance;
+                            best_cluster = cluster;
+                        }
+                    }
+
+                    chunk_assignments.push(best_cluster);
+                    state.counts[best_cluster] += 1;
+
+                    let vector = &data_chunk[row * dim..(row + 1) * dim];
+                    let sum_offset = best_cluster * dim;
+                    #[allow(clippy::needless_range_loop)]
+                    for d in 0..dim {
+                        state.sums[sum_offset + d] += vector[d];
+                    }
+
+                    insert_candidate(&mut chunk_candidates, (best_distance, row));
+                }
+
+                // Convert local candidates to global indices
+                for (dist, local_idx) in chunk_candidates {
+                    state.candidates.push((dist, start + local_idx));
+                }
+
+                state.assignments.push((start, chunk_assignments));
+                state
+            },
+        )
+        .reduce(
+            || ThreadLocalState::new(k, dim),
+            |mut a, b| {
+                a.merge_from(b, k, dim);
+                a
+            },
         );
+
+    // Write assignments back
+    state.assignments.sort_unstable_by_key(|(start, _)| *start);
+    for (start, chunk_assignments) in &state.assignments {
+        let end = start + chunk_assignments.len();
+        assignments[*start..end].copy_from_slice(chunk_assignments);
     }
 
-    let mut assignments = Vec::with_capacity(len);
-    let mut counts = vec![0usize; k];
-    let mut sums = vec![0.0f32; k * dim];
-    let mut candidates: Vec<(f32, usize)> = Vec::new();
-
-    for row in 0..len {
-        let norm = norms_chunk[row];
-        let mut best_cluster = 0usize;
-        let mut best_distance = f32::INFINITY;
-        for cluster in 0..k {
-            let dot = dot_products[row * k + cluster];
-            let mut distance = norm + centroid_norms[cluster] - 2.0 * dot;
-            if distance < 0.0 {
-                distance = 0.0;
-            }
-            if distance < best_distance {
-                best_distance = distance;
-                best_cluster = cluster;
-            }
-        }
-        assignments.push(best_cluster);
-        counts[best_cluster] += 1;
-        let vector = &data_chunk[row * dim..(row + 1) * dim];
-        let sum_offset = best_cluster * dim;
-        for d in 0..dim {
-            sums[sum_offset + d] += vector[d];
-        }
-        insert_candidate(&mut candidates, (best_distance, row));
-    }
-
-    let global_candidates = candidates
-        .into_iter()
-        .map(|(dist, local_idx)| (dist, start + local_idx))
-        .collect();
-
-    ChunkResult {
-        start,
-        len,
-        assignments,
-        counts,
-        sums,
-        candidates: global_candidates,
-    }
+    state.into_summary()
 }
 
 fn insert_candidate(candidates: &mut Vec<(f32, usize)>, candidate: (f32, usize)) {
