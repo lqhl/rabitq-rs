@@ -128,9 +128,9 @@ python python/ivf.py \
 
 ## Publishing to crates.io
 1. Update `version` in `Cargo.toml` (semver)
-2. Run `cargo fmt && cargo clippy --all-targets --all-features && cargo test`
-3. Run `cargo package` to validate bundle
-4. Run `cargo publish` to release
+2. Run `cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test`
+3. Create a new release tag (e.g., `v0.1.3`) and push to GitHub
+4. The GitHub Actions workflow will automatically publish the new version to crates.io
 
 ## Commit Style
 - Short Title Case subjects (e.g., "Rewrite K-Means Trainer")
