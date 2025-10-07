@@ -10,6 +10,9 @@ pub use ivf::{IvfRabitqIndex, SearchParams, SearchResult};
 pub use quantizer::{QuantizedVector, RabitqConfig};
 pub use rotation::RotatorType;
 
+// Re-export RoaringBitmap for user convenience
+pub use roaring::RoaringBitmap;
+
 #[cfg(test)]
 mod tests;
 

@@ -9,7 +9,7 @@ use crate::io::{
 use crate::ivf::{IvfRabitqIndex, SearchParams};
 use crate::kmeans::run_kmeans;
 use crate::quantizer::{quantize_with_centroid, reconstruct_into, RabitqConfig};
-use crate::{Metric, RabitqError, RotatorType};
+use crate::{Metric, RabitqError, RoaringBitmap, RotatorType};
 
 fn random_vector(dim: usize, rng: &mut StdRng) -> Vec<f32> {
     (0..dim).map(|_| rng.gen::<f32>() * 2.0 - 1.0).collect()
@@ -492,4 +492,163 @@ fn preclustered_training_matches_naive_ip() {
         let naive = index.search_naive(query, params).expect("naive search");
         assert_eq!(fastscan, naive, "preclustered search diverged on IP");
     }
+}
+
+#[test]
+fn filtered_search_respects_bitmap() {
+    let dim = 32;
+    let total = 100;
+    let mut rng = StdRng::seed_from_u64(9999);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    let index = IvfRabitqIndex::train(
+        &data,
+        16,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        1111,
+        false,
+    )
+    .expect("train index");
+
+    // Create a filter that only includes IDs 10-19
+    let mut filter = RoaringBitmap::new();
+    for id in 10..20 {
+        filter.insert(id);
+    }
+
+    let params = SearchParams::new(5, 16);
+    let query = &data[0];
+
+    // Perform filtered search
+    let filtered_results = index
+        .search_filtered(query, params, &filter)
+        .expect("filtered search");
+
+    // All returned IDs should be in the filter
+    for result in &filtered_results {
+        assert!(
+            filter.contains(result.id as u32),
+            "result id {} not in filter",
+            result.id
+        );
+    }
+}
+
+#[test]
+fn filtered_search_returns_correct_results() {
+    let dim = 32;
+    let total = 200;
+    let mut rng = StdRng::seed_from_u64(8888);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    let index = IvfRabitqIndex::train(
+        &data,
+        20,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        2222,
+        false,
+    )
+    .expect("train index");
+
+    // Create a filter that includes all even IDs
+    let mut filter = RoaringBitmap::new();
+    for id in (0..total).step_by(2) {
+        filter.insert(id as u32);
+    }
+
+    let params = SearchParams::new(10, 20);
+    let query = &data[50];
+
+    // Perform filtered search
+    let filtered_results = index
+        .search_filtered(query, params, &filter)
+        .expect("filtered search");
+
+    // Get unfiltered search results
+    let unfiltered_results = index.search(query, params).expect("unfiltered search");
+
+    // Verify all filtered results are in the filter
+    for result in &filtered_results {
+        assert!(
+            filter.contains(result.id as u32),
+            "filtered result id {} not in filter",
+            result.id
+        );
+    }
+
+    // Verify that filtered results don't include any odd IDs
+    for result in &filtered_results {
+        assert_eq!(
+            result.id % 2,
+            0,
+            "filtered result id {} is odd but should be even",
+            result.id
+        );
+    }
+
+    // The filtered results should be a subset of unfiltered results (after applying the filter)
+    let unfiltered_filtered_ids: Vec<usize> = unfiltered_results
+        .iter()
+        .filter(|r| filter.contains(r.id as u32))
+        .map(|r| r.id)
+        .collect();
+    let filtered_ids: Vec<usize> = filtered_results.iter().map(|r| r.id).collect();
+
+    // The top results should match
+    let min_len = filtered_ids.len().min(unfiltered_filtered_ids.len());
+    assert_eq!(
+        &filtered_ids[..min_len],
+        &unfiltered_filtered_ids[..min_len],
+        "filtered search results differ from manually filtered unfiltered results"
+    );
+}
+
+#[test]
+fn filtered_search_with_empty_filter() {
+    let dim = 32;
+    let total = 50;
+    let mut rng = StdRng::seed_from_u64(7777);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    let index = IvfRabitqIndex::train(
+        &data,
+        10,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        3333,
+        false,
+    )
+    .expect("train index");
+
+    // Create an empty filter
+    let filter = RoaringBitmap::new();
+
+    let params = SearchParams::new(5, 10);
+    let query = &data[0];
+
+    // Perform filtered search with empty filter
+    let results = index
+        .search_filtered(query, params, &filter)
+        .expect("filtered search");
+
+    // Should return no results
+    assert!(
+        results.is_empty(),
+        "expected empty results with empty filter, got {}",
+        results.len()
+    );
 }

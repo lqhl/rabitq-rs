@@ -9,6 +9,7 @@ use crc32fast::Hasher;
 
 use rand::prelude::*;
 use rayon::prelude::*;
+use roaring::RoaringBitmap;
 
 use crate::kmeans::{run_kmeans, KMeansResult};
 use crate::math::{dot, l2_distance_sqr};
@@ -920,7 +921,26 @@ impl IvfRabitqIndex {
         query: &[f32],
         params: SearchParams,
     ) -> Result<Vec<SearchResult>, RabitqError> {
-        self.search_internal(query, params, None)
+        self.search_internal(query, params, None, None)
+    }
+
+    /// Search for the nearest neighbours of the provided query vector,
+    /// filtering results to only include vector IDs present in the provided bitmap.
+    ///
+    /// # Arguments
+    /// * `query` - The query vector
+    /// * `params` - Search parameters (top_k, nprobe)
+    /// * `filter` - A RoaringBitmap containing valid candidate vector IDs
+    ///
+    /// # Returns
+    /// A vector of search results, sorted by score, containing only IDs present in the filter.
+    pub fn search_filtered(
+        &self,
+        query: &[f32],
+        params: SearchParams,
+        filter: &RoaringBitmap,
+    ) -> Result<Vec<SearchResult>, RabitqError> {
+        self.search_internal(query, params, None, Some(filter))
     }
 
     fn search_internal(
@@ -928,6 +948,7 @@ impl IvfRabitqIndex {
         query: &[f32],
         params: SearchParams,
         mut diagnostics: Option<&mut SearchDiagnostics>,
+        filter: Option<&RoaringBitmap>,
     ) -> Result<Vec<SearchResult>, RabitqError> {
         if self.is_empty() {
             return Err(RabitqError::EmptyIndex);
@@ -976,6 +997,15 @@ impl IvfRabitqIndex {
             let g_error = centroid_norm;
 
             for (local_idx, quantized) in cluster.vectors.iter().enumerate() {
+                let vector_id = cluster.ids[local_idx];
+
+                // Skip this vector if it's not in the filter
+                if let Some(filter_bitmap) = filter {
+                    if !filter_bitmap.contains(vector_id as u32) {
+                        continue;
+                    }
+                }
+
                 let mut binary_dot = 0.0f32;
                 for (&bit, &q_val) in quantized
                     .binary_code
@@ -1061,7 +1091,7 @@ impl IvfRabitqIndex {
 
                 heap.push(HeapEntry {
                     candidate: HeapCandidate {
-                        id: cluster.ids[local_idx],
+                        id: vector_id,
                         distance,
                         score,
                     },
@@ -1103,7 +1133,7 @@ impl IvfRabitqIndex {
         params: SearchParams,
     ) -> Result<(Vec<SearchResult>, SearchDiagnostics), RabitqError> {
         let mut diagnostics = SearchDiagnostics::default();
-        let results = self.search_internal(query, params, Some(&mut diagnostics))?;
+        let results = self.search_internal(query, params, Some(&mut diagnostics), None)?;
         Ok((results, diagnostics))
     }
 

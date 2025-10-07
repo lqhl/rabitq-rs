@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use rabitq_rs::io::{read_fvecs, read_groundtruth, read_ids};
 use rabitq_rs::ivf::{IvfRabitqIndex, SearchParams};
-use rabitq_rs::{Metric, RotatorType};
+use rabitq_rs::{Metric, RoaringBitmap, RotatorType};
 
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -255,20 +255,32 @@ fn evaluate_single_config(
 ) -> CliResult<()> {
     let params = SearchParams::new(config.top_k, config.nprobe);
 
+    // Load filter if provided
+    let filter = if let Some(filter_path) = &config.filter {
+        Some(load_filter(filter_path)?)
+    } else {
+        None
+    };
+
     // Warmup
     if config.warmup_queries > 0 && !queries.is_empty() {
         let warmup_count = config.warmup_queries.min(queries.len());
         println!("\nWarmup: {} queries...", warmup_count);
         for query in queries.iter().take(warmup_count) {
-            let _ = index.search(query, params);
+            if let Some(ref filter_bitmap) = filter {
+                let _ = index.search_filtered(query, params, filter_bitmap);
+            } else {
+                let _ = index.search(query, params);
+            }
         }
     }
 
     println!(
-        "\nEvaluating {} queries (top-k={}, nprobe={})...",
+        "\nEvaluating {} queries (top-k={}, nprobe={}){}...",
         queries.len(),
         config.top_k,
-        config.nprobe
+        config.nprobe,
+        if filter.is_some() { " with filter" } else { "" }
     );
 
     let total_hits = AtomicUsize::new(0);
@@ -280,7 +292,13 @@ fn evaluate_single_config(
         .enumerate()
         .map(|(idx, query)| {
             let query_start = Instant::now();
-            let results = index.search(query, params).expect("search failed");
+            let results = if let Some(ref filter_bitmap) = filter {
+                index
+                    .search_filtered(query, params, filter_bitmap)
+                    .expect("filtered search failed")
+            } else {
+                index.search(query, params).expect("search failed")
+            };
             let latency = query_start.elapsed();
 
             let gt = &groundtruth[idx];
@@ -348,6 +366,10 @@ fn benchmark_with_sweep(
     groundtruth: &[Vec<usize>],
     config: &Config,
 ) -> CliResult<()> {
+    if config.filter.is_some() {
+        return Err("Filter is not supported in benchmark mode".into());
+    }
+
     let top_k = config.top_k;
     let test_rounds = 5;
 
@@ -492,6 +514,7 @@ struct Config {
     groundtruth: Option<PathBuf>,
     top_k: usize,
     nprobe: usize,
+    filter: Option<PathBuf>,
 
     // Evaluation mode
     benchmark_mode: bool, // If true, do nprobe sweep + multi-round benchmark
@@ -526,6 +549,7 @@ impl Config {
         let mut warmup_queries = 10;
         let mut benchmark_mode = false;
         let mut faster_config = false;
+        let mut filter = None;
 
         let mut iter = args.into_iter();
         while let Some(arg) = iter.next() {
@@ -543,6 +567,7 @@ impl Config {
                 "--groundtruth" | "--gt" => groundtruth = Some(next_path(&mut iter, &arg)?),
                 "--top-k" | "--topk" => top_k = next_usize(&mut iter, &arg)?,
                 "--nprobe" => nprobe = next_usize(&mut iter, &arg)?,
+                "--filter" => filter = Some(next_path(&mut iter, &arg)?),
                 "--max-base" => max_base = Some(next_usize(&mut iter, &arg)?),
                 "--max-queries" => max_queries = Some(next_usize(&mut iter, &arg)?),
                 "--seed" => seed = next_u64(&mut iter, &arg)?,
@@ -620,6 +645,7 @@ impl Config {
                         groundtruth,
                         top_k,
                         nprobe,
+                        filter,
                         benchmark_mode,
                         max_base,
                         max_queries,
@@ -644,6 +670,7 @@ impl Config {
                         groundtruth,
                         top_k,
                         nprobe,
+                        filter,
                         benchmark_mode,
                         max_base,
                         max_queries,
@@ -668,6 +695,7 @@ impl Config {
                 groundtruth,
                 top_k,
                 nprobe,
+                filter,
                 benchmark_mode,
                 max_base: None,
                 max_queries,
@@ -700,6 +728,17 @@ fn next_u64(iter: &mut impl Iterator<Item = String>, flag: &str) -> Result<u64, 
     value
         .parse::<u64>()
         .map_err(|_| format!("invalid value for {}: {}", flag, value))
+}
+
+fn load_filter(path: &PathBuf) -> CliResult<RoaringBitmap> {
+    println!("Loading filter from {}...", path.display());
+    let ids = read_ids(path, None)?;
+    let mut bitmap = RoaringBitmap::new();
+    for id in ids {
+        bitmap.insert(id as u32);
+    }
+    println!("Loaded filter with {} valid IDs", bitmap.len());
+    Ok(bitmap)
 }
 
 fn parse_metric(value: &str) -> Result<Metric, String> {
@@ -739,6 +778,7 @@ fn print_usage() {
     eprintln!("  --gt <path>           Ground truth (.ivecs)");
     eprintln!("  --top-k <N>           Number of neighbors to retrieve (default: 100)");
     eprintln!("  --nprobe <N>          Clusters to probe (default: 64, ignored with --benchmark)");
+    eprintln!("  --filter <path>       Filter candidate IDs (.ivecs file with valid vector IDs)");
     eprintln!("  --benchmark           Run nprobe sweep + multi-round benchmark (like C++)\n");
 
     eprintln!("LIMITS & TUNING:");
