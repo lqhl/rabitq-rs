@@ -1,3 +1,5 @@
+pub mod brute_force;
+pub mod index;
 pub mod io;
 pub mod ivf;
 
@@ -6,6 +8,8 @@ mod math;
 mod quantizer;
 mod rotation;
 
+pub use brute_force::{BruteForceRabitqIndex, BruteForceSearchParams, BruteForceSearchResult};
+pub use index::RabitqIndex;
 pub use ivf::{IvfRabitqIndex, SearchParams, SearchResult};
 pub use quantizer::{QuantizedVector, RabitqConfig};
 pub use rotation::RotatorType;

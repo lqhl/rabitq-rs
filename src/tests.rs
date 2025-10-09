@@ -2,6 +2,8 @@ use std::io::Cursor;
 
 use rand::prelude::*;
 
+use crate::brute_force::{BruteForceRabitqIndex, BruteForceSearchParams};
+use crate::index::RabitqIndex;
 use crate::io::{
     read_fvecs_from_reader, read_groundtruth_from_reader, read_ids_from_reader,
     read_ivecs_from_reader,
@@ -651,4 +653,404 @@ fn filtered_search_with_empty_filter() {
         "expected empty results with empty filter, got {}",
         results.len()
     );
+}
+
+#[test]
+fn brute_force_search_recovers_identical_vectors() {
+    let dim = 32;
+    let total = 256;
+    let mut rng = StdRng::seed_from_u64(5555);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    let index = BruteForceRabitqIndex::train(
+        &data,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        8888,
+        false,
+    )
+    .expect("train brute-force index");
+    let params = BruteForceSearchParams::new(1);
+
+    for (idx, vector) in data.iter().take(16).enumerate() {
+        let results = index.search(vector, params).expect("search");
+        assert!(!results.is_empty(), "no results returned for query {idx}");
+        assert_eq!(
+            results[0].id, idx,
+            "failed to retrieve vector {idx} from brute-force index"
+        );
+    }
+}
+
+#[test]
+fn brute_force_l2_search_is_consistent() {
+    let dim = 48;
+    let total = 200;
+    let mut rng = StdRng::seed_from_u64(6666);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    let index = BruteForceRabitqIndex::train(
+        &data,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        9999,
+        false,
+    )
+    .expect("train brute-force index");
+
+    let params = BruteForceSearchParams::new(10);
+    let query = random_vector(dim, &mut rng);
+
+    let results = index.search(&query, params).expect("search");
+    assert_eq!(results.len(), 10, "expected 10 results");
+
+    // Results should be sorted by distance (ascending for L2)
+    for i in 1..results.len() {
+        assert!(
+            results[i].score >= results[i - 1].score,
+            "results not sorted by distance"
+        );
+    }
+}
+
+#[test]
+fn brute_force_inner_product_search_is_consistent() {
+    let dim = 48;
+    let total = 200;
+    let mut rng = StdRng::seed_from_u64(7777);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    let index = BruteForceRabitqIndex::train(
+        &data,
+        7,
+        Metric::InnerProduct,
+        RotatorType::FhtKacRotator,
+        11111,
+        false,
+    )
+    .expect("train brute-force index");
+
+    let params = BruteForceSearchParams::new(10);
+    let query = random_vector(dim, &mut rng);
+
+    let results = index.search(&query, params).expect("search");
+    assert_eq!(results.len(), 10, "expected 10 results");
+
+    // Results should be sorted by score (descending for InnerProduct)
+    for i in 1..results.len() {
+        assert!(
+            results[i].score <= results[i - 1].score,
+            "results not sorted by score (descending)"
+        );
+    }
+}
+
+#[test]
+fn brute_force_persistence_roundtrip() {
+    let dim = 32;
+    let total = 100;
+    let mut rng = StdRng::seed_from_u64(8888);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    let index = BruteForceRabitqIndex::train(
+        &data,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        12345,
+        false,
+    )
+    .expect("train brute-force index");
+
+    let mut buffer = Vec::new();
+    index
+        .save_to_writer(&mut buffer)
+        .expect("save brute-force index");
+
+    let loaded = BruteForceRabitqIndex::load_from_reader(Cursor::new(&buffer))
+        .expect("load brute-force index");
+
+    assert_eq!(loaded.len(), index.len(), "loaded index has wrong length");
+
+    let params = BruteForceSearchParams::new(5);
+    let query = &data[0];
+
+    let results_original = index.search(query, params).expect("search original");
+    let results_loaded = loaded.search(query, params).expect("search loaded");
+
+    assert_eq!(
+        results_original.len(),
+        results_loaded.len(),
+        "result count mismatch"
+    );
+    for (orig, load) in results_original.iter().zip(results_loaded.iter()) {
+        assert_eq!(orig.id, load.id, "id mismatch after roundtrip");
+        assert!(
+            (orig.score - load.score).abs() < 1e-5,
+            "score mismatch after roundtrip"
+        );
+    }
+}
+
+#[test]
+fn brute_force_filtered_search_works() {
+    let dim = 32;
+    let total = 100;
+    let mut rng = StdRng::seed_from_u64(9999);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    let index = BruteForceRabitqIndex::train(
+        &data,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        22222,
+        false,
+    )
+    .expect("train brute-force index");
+
+    // Create a filter with only a subset of IDs
+    let mut filter = RoaringBitmap::new();
+    for i in (10..30).step_by(2) {
+        filter.insert(i);
+    }
+
+    let params = BruteForceSearchParams::new(5);
+    let query = &data[0];
+
+    let results = index
+        .search_filtered(query, params, &filter)
+        .expect("filtered search");
+
+    // All results should be in the filter
+    for result in &results {
+        assert!(
+            filter.contains(result.id as u32),
+            "result id {} not in filter",
+            result.id
+        );
+    }
+
+    // Should return at most 5 results (limited by top_k)
+    assert!(results.len() <= 5, "too many results returned");
+}
+
+#[test]
+fn brute_force_faster_config_works() {
+    let dim = 64;
+    let total = 150;
+    let mut rng = StdRng::seed_from_u64(10000);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    // Train with faster_config enabled
+    let index = BruteForceRabitqIndex::train(
+        &data,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        33333,
+        true, // use_faster_config
+    )
+    .expect("train brute-force index with faster_config");
+
+    let params = BruteForceSearchParams::new(10);
+    let query = &data[0];
+
+    let results = index
+        .search(query, params)
+        .expect("search with faster_config");
+    assert!(!results.is_empty(), "no results with faster_config");
+    assert_eq!(
+        results[0].id, 0,
+        "failed to find self with faster_config enabled"
+    );
+}
+
+#[test]
+fn smart_loader_detects_ivf_index() {
+    let dim = 32;
+    let total = 100;
+    let mut rng = StdRng::seed_from_u64(44444);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    // Create and save an IVF index
+    let ivf_index = IvfRabitqIndex::train(
+        &data,
+        16,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        55555,
+        false,
+    )
+    .expect("train IVF index");
+
+    let mut buffer = Vec::new();
+    ivf_index
+        .save_to_writer(&mut buffer)
+        .expect("save IVF index");
+
+    // Load using smart loader
+    let loaded = RabitqIndex::load_from_reader(Cursor::new(&buffer)).expect("smart load IVF index");
+
+    // Verify it's an IVF index
+    assert!(loaded.is_ivf(), "should detect IVF index");
+    assert!(!loaded.is_brute_force(), "should not be brute force");
+    assert_eq!(loaded.len(), total, "loaded index has wrong length");
+
+    // Verify we can unwrap to IVF
+    let unwrapped = loaded.as_ivf().expect("should be IVF");
+    assert_eq!(unwrapped.cluster_count(), 16, "wrong cluster count");
+}
+
+#[test]
+fn smart_loader_detects_brute_force_index() {
+    let dim = 32;
+    let total = 100;
+    let mut rng = StdRng::seed_from_u64(66666);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    // Create and save a BruteForce index
+    let bf_index = BruteForceRabitqIndex::train(
+        &data,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        77777,
+        false,
+    )
+    .expect("train BruteForce index");
+
+    let mut buffer = Vec::new();
+    bf_index
+        .save_to_writer(&mut buffer)
+        .expect("save BruteForce index");
+
+    // Load using smart loader
+    let loaded =
+        RabitqIndex::load_from_reader(Cursor::new(&buffer)).expect("smart load BruteForce index");
+
+    // Verify it's a BruteForce index
+    assert!(loaded.is_brute_force(), "should detect BruteForce index");
+    assert!(!loaded.is_ivf(), "should not be IVF");
+    assert_eq!(loaded.len(), total, "loaded index has wrong length");
+
+    // Verify we can unwrap to BruteForce
+    let unwrapped = loaded.as_brute_force().expect("should be BruteForce");
+    assert_eq!(unwrapped.len(), total, "wrong vector count");
+}
+
+#[test]
+fn smart_loader_rejects_invalid_magic() {
+    // Create a buffer with invalid magic header
+    let mut buffer = vec![b'X', b'X', b'X', b'X'];
+    buffer.extend_from_slice(&[0u8; 100]); // Add some dummy data
+
+    // Try to load
+    let result = RabitqIndex::load_from_reader(Cursor::new(&buffer));
+
+    // Should fail with InvalidPersistence error
+    assert!(result.is_err(), "should reject invalid magic");
+    match result {
+        Err(RabitqError::InvalidPersistence(msg)) => {
+            assert!(
+                msg.contains("unrecognized") || msg.contains("magic"),
+                "error message should mention magic header"
+            );
+        }
+        _ => panic!("expected InvalidPersistence error"),
+    }
+}
+
+#[test]
+fn smart_loader_search_works_correctly() {
+    let dim = 32;
+    let total = 100;
+    let mut rng = StdRng::seed_from_u64(88888);
+    let mut data = Vec::with_capacity(total);
+    for _ in 0..total {
+        data.push(random_vector(dim, &mut rng));
+    }
+
+    // Test with IVF index
+    let ivf_index = IvfRabitqIndex::train(
+        &data,
+        16,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        99999,
+        false,
+    )
+    .expect("train IVF");
+    let mut buffer = Vec::new();
+    ivf_index.save_to_writer(&mut buffer).expect("save IVF");
+
+    let loaded_ivf = RabitqIndex::load_from_reader(Cursor::new(&buffer)).expect("load IVF");
+
+    match loaded_ivf {
+        RabitqIndex::Ivf(idx) => {
+            let params = SearchParams::new(5, 16);
+            let results = idx.search(&data[0], params).expect("IVF search");
+            assert!(!results.is_empty(), "IVF search should return results");
+            assert_eq!(results[0].id, 0, "should find query vector");
+        }
+        RabitqIndex::BruteForce(_) => panic!("expected IVF index"),
+    }
+
+    // Test with BruteForce index
+    let bf_index = BruteForceRabitqIndex::train(
+        &data,
+        7,
+        Metric::L2,
+        RotatorType::FhtKacRotator,
+        11111,
+        false,
+    )
+    .expect("train BruteForce");
+    let mut buffer = Vec::new();
+    bf_index
+        .save_to_writer(&mut buffer)
+        .expect("save BruteForce");
+
+    let loaded_bf = RabitqIndex::load_from_reader(Cursor::new(&buffer)).expect("load BruteForce");
+
+    match loaded_bf {
+        RabitqIndex::BruteForce(idx) => {
+            let params = BruteForceSearchParams::new(5);
+            let results = idx.search(&data[0], params).expect("BruteForce search");
+            assert!(
+                !results.is_empty(),
+                "BruteForce search should return results"
+            );
+            assert_eq!(results[0].id, 0, "should find query vector");
+        }
+        RabitqIndex::Ivf(_) => panic!("expected BruteForce index"),
+    }
 }

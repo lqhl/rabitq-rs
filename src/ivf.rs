@@ -25,7 +25,7 @@ pub struct SearchParams {
 }
 
 /// Pack binary codes (1 bit per element) into bytes
-fn pack_binary_code(binary_code: &[u8]) -> Vec<u8> {
+pub(crate) fn pack_binary_code(binary_code: &[u8]) -> Vec<u8> {
     let num_bytes = (binary_code.len() + 7) / 8;
     let mut packed = vec![0u8; num_bytes];
     for (i, &bit) in binary_code.iter().enumerate() {
@@ -37,7 +37,7 @@ fn pack_binary_code(binary_code: &[u8]) -> Vec<u8> {
 }
 
 /// Unpack binary codes from packed bytes
-fn unpack_binary_code(packed: &[u8], dim: usize) -> Vec<u8> {
+pub(crate) fn unpack_binary_code(packed: &[u8], dim: usize) -> Vec<u8> {
     let mut binary_code = vec![0u8; dim];
     for i in 0..dim {
         if (packed[i / 8] & (1 << (i % 8))) != 0 {
@@ -48,7 +48,7 @@ fn unpack_binary_code(packed: &[u8], dim: usize) -> Vec<u8> {
 }
 
 /// Pack ex codes (2 bits per element) into bytes
-fn pack_ex_code(ex_code: &[u16], ex_bits: u8) -> Vec<u8> {
+pub(crate) fn pack_ex_code(ex_code: &[u16], ex_bits: u8) -> Vec<u8> {
     if ex_bits == 0 {
         return Vec::new();
     }
@@ -83,7 +83,7 @@ fn pack_ex_code(ex_code: &[u16], ex_bits: u8) -> Vec<u8> {
 }
 
 /// Unpack ex codes from packed bytes
-fn unpack_ex_code(packed: &[u8], dim: usize, ex_bits: u8) -> Vec<u16> {
+pub(crate) fn unpack_ex_code(packed: &[u8], dim: usize, ex_bits: u8) -> Vec<u16> {
     if ex_bits == 0 {
         return vec![0u16; dim];
     }
