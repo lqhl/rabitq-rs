@@ -2,8 +2,8 @@ pub mod brute_force;
 pub mod index;
 pub mod io;
 pub mod ivf;
+pub mod kmeans;
 
-mod kmeans;
 mod math;
 mod quantizer;
 mod rotation;

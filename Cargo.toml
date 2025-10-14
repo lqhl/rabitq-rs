@@ -23,6 +23,8 @@ roaring = "0.10"
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["std"] }
+kentro = "0.2"
+ndarray = "0.16"
 
 [lib]
 name = "rabitq_rs"
