@@ -136,3 +136,4 @@ python python/ivf.py \
 - Short Title Case subjects (e.g., "Rewrite K-Means Trainer")
 - Keep under 72 characters
 - Describe behavior changes, not implementation details
+- RaBitQ 不是 Residual-Aware Bit Quantization 的缩写

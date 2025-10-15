@@ -274,7 +274,7 @@ unsafe fn pack_1bit_ex_code_avx512(ex_code: &[u16], packed: &mut [u8], dim: usiz
         let offset = chunk * 16;
         let mut code = 0u16;
         for i in 0..16 {
-            code |= ((ex_code[offset + i] & 1) as u16) << i;
+            code |= (ex_code[offset + i] & 1) << i;
         }
         let out_offset = chunk * 2;
         packed[out_offset..out_offset + 2].copy_from_slice(&code.to_le_bytes());
@@ -285,7 +285,7 @@ unsafe fn pack_1bit_ex_code_avx512(ex_code: &[u16], packed: &mut [u8], dim: usiz
         let offset = chunks * 16;
         let mut code = 0u16;
         for i in 0..remainder {
-            code |= ((ex_code[offset + i] & 1) as u16) << i;
+            code |= (ex_code[offset + i] & 1) << i;
         }
         let out_offset = chunks * 2;
         packed[out_offset..out_offset + 2].copy_from_slice(&code.to_le_bytes());
