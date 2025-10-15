@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "rabitq-rs"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "crc32fast",
  "matrixmultiply",
