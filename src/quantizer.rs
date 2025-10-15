@@ -2,6 +2,7 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
 use crate::math::{dot, l2_norm_sqr, subtract};
+use crate::simd;
 use crate::Metric;
 
 const K_TIGHT_START: [f64; 9] = [0.0, 0.15, 0.20, 0.52, 0.59, 0.71, 0.75, 0.77, 0.81];
@@ -44,12 +45,23 @@ impl RabitqConfig {
     }
 }
 
-/// Quantised representation of a vector.
+/// Quantised representation of a vector using packed format (aligned with C++ implementation).
+///
+/// Binary codes and extended codes are stored in bit-packed format for memory efficiency.
+/// - `binary_code_packed`: 1 bit per dimension
+/// - `ex_code_packed`: ex_bits per dimension
 #[derive(Debug, Clone)]
 pub struct QuantizedVector {
+    /// Full code (binary_code | ex_code), kept for backward compatibility
     pub code: Vec<u16>,
-    pub binary_code: Vec<u8>,
-    pub ex_code: Vec<u16>,
+    /// Packed binary code (1 bit per element)
+    pub binary_code_packed: Vec<u8>,
+    /// Packed extended code (ex_bits per element)
+    pub ex_code_packed: Vec<u8>,
+    /// Number of extended bits per element
+    pub ex_bits: u8,
+    /// Original dimension (before padding)
+    pub dim: usize,
     pub delta: f32,
     pub vl: f32,
     pub f_add: f32,
@@ -58,6 +70,24 @@ pub struct QuantizedVector {
     pub residual_norm: f32,
     pub f_add_ex: f32,
     pub f_rescale_ex: f32,
+}
+
+impl QuantizedVector {
+    /// Unpack binary code for computation
+    #[inline]
+    pub fn unpack_binary_code(&self) -> Vec<u8> {
+        let mut binary_code = vec![0u8; self.dim];
+        simd::unpack_binary_code(&self.binary_code_packed, &mut binary_code, self.dim);
+        binary_code
+    }
+
+    /// Unpack extended code for computation
+    #[inline]
+    pub fn unpack_ex_code(&self) -> Vec<u16> {
+        let mut ex_code = vec![0u16; self.dim];
+        simd::unpack_ex_code(&self.ex_code_packed, &mut ex_code, self.dim, self.ex_bits);
+        ex_code
+    }
 }
 
 /// Quantise a vector relative to a centroid with custom configuration.
@@ -126,10 +156,27 @@ pub fn quantize_with_centroid(
         f_rescale_ex = factors.1;
     }
 
+    // Pack binary code and ex code into bit-packed format
+    let binary_code_packed_size = (dim + 7) / 8;
+    let mut binary_code_packed = vec![0u8; binary_code_packed_size];
+    simd::pack_binary_code(&binary_code, &mut binary_code_packed, dim);
+
+    let ex_code_packed_size = if ex_bits > 0 {
+        ((dim * ex_bits) + 7) / 8
+    } else {
+        0
+    };
+    let mut ex_code_packed = vec![0u8; ex_code_packed_size];
+    if ex_bits > 0 {
+        simd::pack_ex_code(&ex_code, &mut ex_code_packed, dim, ex_bits as u8);
+    }
+
     QuantizedVector {
         code: total_code,
-        binary_code,
-        ex_code,
+        binary_code_packed,
+        ex_code_packed,
+        ex_bits: ex_bits as u8,
+        dim,
         delta,
         vl,
         f_add,

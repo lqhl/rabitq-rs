@@ -1,3 +1,5 @@
+#![cfg_attr(target_arch = "x86_64", feature(avx512_target_feature))]
+
 pub mod brute_force;
 pub mod index;
 pub mod io;
@@ -7,6 +9,7 @@ mod kmeans;
 mod math;
 mod quantizer;
 mod rotation;
+mod simd;
 
 pub use brute_force::{BruteForceRabitqIndex, BruteForceSearchParams, BruteForceSearchResult};
 pub use index::RabitqIndex;

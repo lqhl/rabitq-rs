@@ -24,18 +24,6 @@ pub struct SearchParams {
     pub nprobe: usize,
 }
 
-/// Pack binary codes (1 bit per element) into bytes
-pub(crate) fn pack_binary_code(binary_code: &[u8]) -> Vec<u8> {
-    let num_bytes = (binary_code.len() + 7) / 8;
-    let mut packed = vec![0u8; num_bytes];
-    for (i, &bit) in binary_code.iter().enumerate() {
-        if bit != 0 {
-            packed[i / 8] |= 1 << (i % 8);
-        }
-    }
-    packed
-}
-
 /// Unpack binary codes from packed bytes
 pub(crate) fn unpack_binary_code(packed: &[u8], dim: usize) -> Vec<u8> {
     let mut binary_code = vec![0u8; dim];
@@ -45,41 +33,6 @@ pub(crate) fn unpack_binary_code(packed: &[u8], dim: usize) -> Vec<u8> {
         }
     }
     binary_code
-}
-
-/// Pack ex codes (2 bits per element) into bytes
-pub(crate) fn pack_ex_code(ex_code: &[u16], ex_bits: u8) -> Vec<u8> {
-    if ex_bits == 0 {
-        return Vec::new();
-    }
-    let bits_per_element = ex_bits as usize;
-    let total_bits = ex_code.len() * bits_per_element;
-    let num_bytes = (total_bits + 7) / 8;
-    let mut packed = vec![0u8; num_bytes];
-
-    for (i, &code) in ex_code.iter().enumerate() {
-        let bit_offset = i * bits_per_element;
-        let byte_offset = bit_offset / 8;
-        let bit_in_byte = bit_offset % 8;
-
-        // Handle potential multi-byte span
-        let mut remaining_bits = bits_per_element;
-        let mut remaining_code = code;
-        let mut current_byte = byte_offset;
-        let mut current_bit = bit_in_byte;
-
-        while remaining_bits > 0 {
-            let bits_in_current_byte = (8 - current_bit).min(remaining_bits);
-            let mask = ((1u16 << bits_in_current_byte) - 1) as u8;
-            packed[current_byte] |= ((remaining_code & mask as u16) as u8) << current_bit;
-
-            remaining_code >>= bits_in_current_byte;
-            remaining_bits -= bits_in_current_byte;
-            current_byte += 1;
-            current_bit = 0;
-        }
-    }
-    packed
 }
 
 /// Unpack ex codes from packed bytes
@@ -690,23 +643,19 @@ impl IvfRabitqIndex {
             }
 
             for vector in &cluster.vectors {
-                if vector.binary_code.len() != self.padded_dim
-                    || vector.ex_code.len() != self.padded_dim
-                {
+                if vector.dim != self.padded_dim {
                     return Err(RabitqError::InvalidPersistence(
                         "quantized vector dimension mismatch",
                     ));
                 }
 
-                // V2: Bit-packed binary_code (1 bit per element)
-                let packed_binary = pack_binary_code(&vector.binary_code);
-                writer.write_all(&packed_binary)?;
-                hasher.update(&packed_binary);
+                // V2: Write packed binary_code (already in packed format)
+                writer.write_all(&vector.binary_code_packed)?;
+                hasher.update(&vector.binary_code_packed);
 
-                // V2: Bit-packed ex_code (ex_bits per element)
-                let packed_ex = pack_ex_code(&vector.ex_code, self.ex_bits as u8);
-                writer.write_all(&packed_ex)?;
-                hasher.update(&packed_ex);
+                // V2: Write packed ex_code (already in packed format)
+                writer.write_all(&vector.ex_code_packed)?;
+                hasher.update(&vector.ex_code_packed);
 
                 // Metadata (8 × f32 = 32 bytes, unchanged)
                 write_f32(&mut writer, vector.delta, Some(&mut hasher))?;
@@ -864,10 +813,28 @@ impl IvfRabitqIndex {
                 let f_add_ex = read_f32(&mut reader, Some(&mut hasher))?;
                 let f_rescale_ex = read_f32(&mut reader, Some(&mut hasher))?;
 
+                // Pack the codes for in-memory storage
+                use crate::simd;
+                let binary_code_packed_size = (padded_dim + 7) / 8;
+                let mut binary_code_packed = vec![0u8; binary_code_packed_size];
+                simd::pack_binary_code(&binary_code, &mut binary_code_packed, padded_dim);
+
+                let ex_code_packed_size = if ex_bits > 0 {
+                    ((padded_dim * ex_bits) + 7) / 8
+                } else {
+                    0
+                };
+                let mut ex_code_packed = vec![0u8; ex_code_packed_size];
+                if ex_bits > 0 {
+                    simd::pack_ex_code(&ex_code, &mut ex_code_packed, padded_dim, ex_bits as u8);
+                }
+
                 vectors.push(QuantizedVector {
                     code,
-                    binary_code,
-                    ex_code,
+                    binary_code_packed,
+                    ex_code_packed,
+                    ex_bits: ex_bits as u8,
+                    dim: padded_dim,
                     delta,
                     vl,
                     f_add,
@@ -1006,12 +973,10 @@ impl IvfRabitqIndex {
                     }
                 }
 
+                // Unpack binary code for computation
+                let binary_code = quantized.unpack_binary_code();
                 let mut binary_dot = 0.0f32;
-                for (&bit, &q_val) in quantized
-                    .binary_code
-                    .iter()
-                    .zip(query_precomp.rotated_query.iter())
-                {
+                for (&bit, &q_val) in binary_code.iter().zip(query_precomp.rotated_query.iter()) {
                     binary_dot += (bit as f32) * q_val;
                 }
                 // Use precomputed k1x_sum_q instead of c1 * sum_query
@@ -1063,12 +1028,10 @@ impl IvfRabitqIndex {
                 };
 
                 if self.ex_bits > 0 {
+                    // Unpack ex code for computation
+                    let ex_code = quantized.unpack_ex_code();
                     let mut ex_dot = 0.0f32;
-                    for (&code, &q_val) in quantized
-                        .ex_code
-                        .iter()
-                        .zip(query_precomp.rotated_query.iter())
-                    {
+                    for (&code, &q_val) in ex_code.iter().zip(query_precomp.rotated_query.iter()) {
                         ex_dot += (code as f32) * q_val;
                     }
                     // Use precomputed values: binary_scale, kbx_sum_q
@@ -1183,15 +1146,18 @@ impl IvfRabitqIndex {
                 Metric::InnerProduct => -dot_query_centroid,
             };
             for (local_idx, quantized) in cluster.vectors.iter().enumerate() {
+                // Unpack codes for naive search
+                let binary_code = quantized.unpack_binary_code();
                 let mut binary_dot = 0.0f32;
-                for (&bit, &q_val) in quantized.binary_code.iter().zip(rotated_query.iter()) {
+                for (&bit, &q_val) in binary_code.iter().zip(rotated_query.iter()) {
                     binary_dot += (bit as f32) * q_val;
                 }
                 let binary_term = binary_dot + c1 * sum_query;
                 let mut distance = quantized.f_add + g_add + quantized.f_rescale * binary_term;
                 if self.ex_bits > 0 {
+                    let ex_code = quantized.unpack_ex_code();
                     let mut ex_dot = 0.0f32;
-                    for (&code, &q_val) in quantized.ex_code.iter().zip(rotated_query.iter()) {
+                    for (&code, &q_val) in ex_code.iter().zip(rotated_query.iter()) {
                         ex_dot += (code as f32) * q_val;
                     }
                     let total_term = binary_scale * binary_dot + ex_dot + cb * sum_query;

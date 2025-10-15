@@ -27,12 +27,12 @@ fn quantizer_reconstruction_is_reasonable() {
     let quantized = quantize_with_centroid(&data, &centroid, &config, Metric::L2);
     assert_eq!(quantized.code.len(), dim, "quantized code length mismatch");
     assert_eq!(
-        quantized.ex_code.len(),
+        quantized.unpack_ex_code().len(),
         dim,
         "extended code length mismatch"
     );
     assert_eq!(
-        quantized.binary_code.len(),
+        quantized.unpack_binary_code().len(),
         dim,
         "binary code length mismatch"
     );

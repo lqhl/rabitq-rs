@@ -9,7 +9,7 @@ use crc32fast::Hasher;
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
 
-use crate::ivf::{pack_binary_code, pack_ex_code, unpack_binary_code, unpack_ex_code};
+use crate::ivf::{unpack_binary_code, unpack_ex_code};
 use crate::quantizer::{quantize_with_centroid, QuantizedVector, RabitqConfig};
 use crate::rotation::{DynamicRotator, RotatorType};
 use crate::{Metric, RabitqError};
@@ -355,23 +355,19 @@ impl BruteForceRabitqIndex {
 
         // Save vectors
         for vector in &self.vectors {
-            if vector.binary_code.len() != self.padded_dim
-                || vector.ex_code.len() != self.padded_dim
-            {
+            if vector.dim != self.padded_dim {
                 return Err(RabitqError::InvalidPersistence(
                     "quantized vector dimension mismatch",
                 ));
             }
 
-            // Bit-packed binary_code (1 bit per element)
-            let packed_binary = pack_binary_code(&vector.binary_code);
-            writer.write_all(&packed_binary)?;
-            hasher.update(&packed_binary);
+            // Write packed binary_code (already in packed format)
+            writer.write_all(&vector.binary_code_packed)?;
+            hasher.update(&vector.binary_code_packed);
 
-            // Bit-packed ex_code (ex_bits per element)
-            let packed_ex = pack_ex_code(&vector.ex_code, self.ex_bits as u8);
-            writer.write_all(&packed_ex)?;
-            hasher.update(&packed_ex);
+            // Write packed ex_code (already in packed format)
+            writer.write_all(&vector.ex_code_packed)?;
+            hasher.update(&vector.ex_code_packed);
 
             // Metadata (8 × f32 = 32 bytes)
             write_f32(&mut writer, vector.delta, Some(&mut hasher))?;
@@ -491,10 +487,28 @@ impl BruteForceRabitqIndex {
             let f_add_ex = read_f32(&mut reader, Some(&mut hasher))?;
             let f_rescale_ex = read_f32(&mut reader, Some(&mut hasher))?;
 
+            // Pack the codes for in-memory storage
+            use crate::simd;
+            let binary_code_packed_size = (padded_dim + 7) / 8;
+            let mut binary_code_packed = vec![0u8; binary_code_packed_size];
+            simd::pack_binary_code(&binary_code, &mut binary_code_packed, padded_dim);
+
+            let ex_code_packed_size = if ex_bits > 0 {
+                ((padded_dim * ex_bits) + 7) / 8
+            } else {
+                0
+            };
+            let mut ex_code_packed = vec![0u8; ex_code_packed_size];
+            if ex_bits > 0 {
+                simd::pack_ex_code(&ex_code, &mut ex_code_packed, padded_dim, ex_bits as u8);
+            }
+
             vectors.push(QuantizedVector {
                 code,
-                binary_code,
-                ex_code,
+                binary_code_packed,
+                ex_code_packed,
+                ex_bits: ex_bits as u8,
+                dim: padded_dim,
                 delta,
                 vl,
                 f_add,
@@ -579,12 +593,10 @@ impl BruteForceRabitqIndex {
                 }
             }
 
+            // Unpack binary code for computation
+            let binary_code = quantized.unpack_binary_code();
             let mut binary_dot = 0.0f32;
-            for (&bit, &q_val) in quantized
-                .binary_code
-                .iter()
-                .zip(query_precomp.rotated_query.iter())
-            {
+            for (&bit, &q_val) in binary_code.iter().zip(query_precomp.rotated_query.iter()) {
                 binary_dot += (bit as f32) * q_val;
             }
             let binary_term = binary_dot + query_precomp.k1x_sum_q;
@@ -596,12 +608,10 @@ impl BruteForceRabitqIndex {
             };
 
             if self.ex_bits > 0 {
+                // Unpack ex code for computation
+                let ex_code = quantized.unpack_ex_code();
                 let mut ex_dot = 0.0f32;
-                for (&code, &q_val) in quantized
-                    .ex_code
-                    .iter()
-                    .zip(query_precomp.rotated_query.iter())
-                {
+                for (&code, &q_val) in ex_code.iter().zip(query_precomp.rotated_query.iter()) {
                     ex_dot += (code as f32) * q_val;
                 }
                 let total_term =
