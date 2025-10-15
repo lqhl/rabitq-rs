@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Override .cargo/config.toml to disable AVX512 on CI (GitHub runners don't support it)
+  RUSTFLAGS: ""
 
 jobs:
   test:
