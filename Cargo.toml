@@ -20,6 +20,9 @@ thiserror = "1.0"
 signal-hook = { version = "0.3", features = ["iterator"] }
 crc32fast = "1.3"
 roaring = "0.10"
+instant-distance = "0.6"
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["std"] }
@@ -31,6 +34,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "ivf_rabitq"
 path = "src/bin/ivf_rabitq.rs"
+
+[[bin]]
+name = "mstg_rabitq"
+path = "src/bin/mstg_rabitq.rs"
 
 [package.metadata.docs.rs]
 all-features = true

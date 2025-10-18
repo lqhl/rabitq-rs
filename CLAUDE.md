@@ -3,7 +3,11 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Overview
-This is a pure-Rust implementation of the RaBitQ quantization scheme with IVF (Inverted File) search capabilities. The project mirrors the behavior of the C++ RaBitQ Library and provides tools to reproduce the GIST benchmark pipeline.
+This is a pure-Rust implementation of the RaBitQ quantization scheme with two search backends:
+- **IVF (Inverted File)**: Flat clustering for in-memory search, suitable for <100M vectors
+- **MSTG (Multi-Scale Tree Graph)**: Hierarchical clustering + HNSW for disk-based search, designed for >100M vectors
+
+The project mirrors the behavior of the C++ RaBitQ Library and provides tools to reproduce the GIST benchmark pipeline.
 
 ## Key Commands
 
@@ -14,7 +18,9 @@ cargo clippy --all-targets --all-features    # Lint (must pass cleanly)
 cargo test                                   # Run unit and integration tests
 ```
 
-### Benchmark Evaluation (ivf_rabitq binary)
+### Benchmark Evaluation
+
+#### IVF-RaBitQ (ivf_rabitq binary)
 ```bash
 # Build index
 cargo run --release --bin ivf_rabitq -- \
@@ -60,6 +66,29 @@ cargo run --release --bin ivf_rabitq -- \
     --nprobe 64
 ```
 
+#### MSTG-RaBitQ (mstg_rabitq binary)
+```bash
+# Build and benchmark in one command
+cargo run --release --bin mstg_rabitq -- \
+    --base data/gist/gist_base.fvecs \
+    --queries data/gist/gist_query.fvecs \
+    --gt data/gist/gist_groundtruth.ivecs \
+    --bits 7 \
+    --k 16 \
+    --target-cluster-size 100 \
+    --benchmark \
+    --faster-config
+
+# Quick smoke test
+cargo run --release --bin mstg_rabitq -- \
+    --base data/gist/gist_base.fvecs \
+    --queries data/gist/gist_query.fvecs \
+    --gt data/gist/gist_groundtruth.ivecs \
+    --max-base 10000 \
+    --max-queries 100 \
+    --nprobe 64
+```
+
 ### Python Helper (Pre-clustering with FAISS)
 ```bash
 python python/ivf.py \
@@ -73,8 +102,8 @@ python python/ivf.py \
 ## Architecture
 
 ### Core Module Organization
-- **`src/lib.rs`**: Re-exports public API (`IvfRabitqIndex`, `SearchParams`, `SearchResult`, `QuantizedVector`, `RabitqConfig`, `Metric`)
-- **`src/ivf.rs`**: IVF + RaBitQ index implementation
+- **`src/lib.rs`**: Re-exports public API (`IvfRabitqIndex`, `MstgRabitqIndex`, `SearchParams`, `SearchResult`, `QuantizedVector`, `RabitqConfig`, `Metric`)
+- **`src/ivf.rs`**: IVF + RaBitQ index implementation (flat clustering, in-memory)
   - `IvfRabitqIndex::train()`: Train from scratch with built-in k-means
   - `IvfRabitqIndex::train_with_clusters()`: Train using pre-computed centroids and assignments (FAISS-compatible)
   - `IvfRabitqIndex::search()`: Performs approximate nearest-neighbor search with configurable `nprobe` and `top_k`
@@ -87,10 +116,17 @@ python python/ivf.py \
 - **`src/kmeans.rs`**: Lightweight k-means implementation for in-crate training
 - **`src/math.rs`**: Low-level vector operations (dot product, L2 distance, subtraction, norms)
 - **`src/io.rs`**: Parsers for `.fvecs` and `.ivecs` file formats (GIST/SIFT datasets)
-- **`src/bin/ivf_rabitq.rs`**: CLI for benchmarking IVF + RaBitQ on any .fvecs dataset
-  - Three modes: Index, Query, or IndexAndQuery (auto-detected from arguments)
-  - `--benchmark` flag enables C++-style nprobe sweep + 5-round benchmark
-  - Without `--benchmark`, evaluates at specific nprobe with detailed latency stats
+- **`src/mstg.rs`**: MSTG + RaBitQ index implementation (hierarchical clustering, disk-ready)
+  - `MstgRabitqIndex::train()`: Build multi-level k-means tree + HNSW graph on medoids
+  - `MstgRabitqIndex::search()`: HNSW-accelerated cluster selection + RaBitQ scan
+  - Designed for large-scale data with on-disk cluster storage (future)
+  - See `docs/MSTG_DESIGN.md` for detailed architecture
+- **`src/bin/ivf_rabitq.rs`**: CLI for benchmarking IVF + RaBitQ
+  - Three modes: Index, Query, or IndexAndQuery
+  - `--benchmark` flag enables nprobe sweep + 5-round benchmark
+- **`src/bin/mstg_rabitq.rs`**: CLI for benchmarking MSTG + RaBitQ
+  - Builds multi-level tree with configurable branching factor (`--k`) and cluster size (`--target-cluster-size`)
+  - Same benchmark mode as IVF for direct comparison
 - **`src/tests.rs`**: Regression tests with seeded RNGs for deterministic validation
 
 ### Training Workflows
@@ -115,6 +151,23 @@ python python/ivf.py \
   - Default: compute optimal scaling factor per vector (slower, more accurate)
   - With `--faster-config`: use precomputed constant (100-500x faster, <1% accuracy loss)
   - Recommended for large datasets (>100K vectors)
+
+## Index Selection Guide
+
+### IVF-RaBitQ
+- **Configuration**: `nlist ≈ sqrt(N) × 2` (e.g., 2000 for 1M vectors)
+- **Best for**: <100M vectors, all in-memory, ultra-low latency (<5ms)
+- **Memory**: Stores all centroids + quantized codes in RAM
+- **Production ready**: Yes
+
+### MSTG-RaBitQ
+- **Configuration**: `target_cluster_size = 100` → `num_clusters ≈ N / 100` (e.g., 10,000 for 1M vectors)
+- **Best for**: >100M vectors, disk-based storage, cost-sensitive deployments
+- **Memory**: Only medoids + HNSW graph in RAM (~500MB for 100M vectors), clusters on SSD
+- **Production ready**: Experimental (in-memory prototype complete, disk-based in development)
+- **Key advantage**: Can serve 100M vectors with <2GB RAM using NVMe SSD
+
+See `docs/MSTG_DESIGN.md` for detailed comparison and roadmap.
 
 ## Data Files
 - Large datasets live in `data/` (git-ignored)

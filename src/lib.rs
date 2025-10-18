@@ -4,6 +4,7 @@ pub mod brute_force;
 pub mod index;
 pub mod io;
 pub mod ivf;
+pub mod mstg;
 
 mod kmeans;
 mod math;
@@ -14,6 +15,7 @@ mod simd;
 pub use brute_force::{BruteForceRabitqIndex, BruteForceSearchParams, BruteForceSearchResult};
 pub use index::RabitqIndex;
 pub use ivf::{IvfRabitqIndex, SearchParams, SearchResult};
+pub use mstg::{MstgConfig, MstgRabitqIndex, MstgSearchParams, MstgSearchResult};
 pub use quantizer::{QuantizedVector, RabitqConfig};
 pub use rotation::RotatorType;
 

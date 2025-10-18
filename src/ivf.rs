@@ -81,7 +81,11 @@ fn reconstruct_code(binary_code: &[u8], ex_code: &[u16], ex_bits: u8) -> Vec<u16
         .collect()
 }
 
-fn write_u32<W: Write>(writer: &mut W, value: u32, hasher: Option<&mut Hasher>) -> io::Result<()> {
+pub(crate) fn write_u32<W: Write>(
+    writer: &mut W,
+    value: u32,
+    hasher: Option<&mut Hasher>,
+) -> io::Result<()> {
     let bytes = value.to_le_bytes();
     if let Some(h) = hasher {
         h.update(&bytes);
@@ -89,7 +93,11 @@ fn write_u32<W: Write>(writer: &mut W, value: u32, hasher: Option<&mut Hasher>) 
     writer.write_all(&bytes)
 }
 
-fn write_u64<W: Write>(writer: &mut W, value: u64, hasher: Option<&mut Hasher>) -> io::Result<()> {
+pub(crate) fn write_u64<W: Write>(
+    writer: &mut W,
+    value: u64,
+    hasher: Option<&mut Hasher>,
+) -> io::Result<()> {
     let bytes = value.to_le_bytes();
     if let Some(h) = hasher {
         h.update(&bytes);
@@ -97,7 +105,11 @@ fn write_u64<W: Write>(writer: &mut W, value: u64, hasher: Option<&mut Hasher>) 
     writer.write_all(&bytes)
 }
 
-fn write_f32<W: Write>(writer: &mut W, value: f32, hasher: Option<&mut Hasher>) -> io::Result<()> {
+pub(crate) fn write_f32<W: Write>(
+    writer: &mut W,
+    value: f32,
+    hasher: Option<&mut Hasher>,
+) -> io::Result<()> {
     let bytes = value.to_le_bytes();
     if let Some(h) = hasher {
         h.update(&bytes);
@@ -105,7 +117,7 @@ fn write_f32<W: Write>(writer: &mut W, value: f32, hasher: Option<&mut Hasher>) 
     writer.write_all(&bytes)
 }
 
-fn read_u8<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<u8> {
+pub(crate) fn read_u8<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<u8> {
     let mut buf = [0u8; 1];
     reader.read_exact(&mut buf)?;
     if let Some(h) = hasher {
@@ -123,7 +135,7 @@ fn read_u16<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<
     Ok(u16::from_le_bytes(buf))
 }
 
-fn read_u32<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<u32> {
+pub(crate) fn read_u32<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<u32> {
     let mut buf = [0u8; 4];
     reader.read_exact(&mut buf)?;
     if let Some(h) = hasher {
@@ -132,7 +144,7 @@ fn read_u32<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<
     Ok(u32::from_le_bytes(buf))
 }
 
-fn read_u64<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<u64> {
+pub(crate) fn read_u64<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<u64> {
     let mut buf = [0u8; 8];
     reader.read_exact(&mut buf)?;
     if let Some(h) = hasher {
@@ -141,7 +153,7 @@ fn read_u64<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<
     Ok(u64::from_le_bytes(buf))
 }
 
-fn read_f32<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<f32> {
+pub(crate) fn read_f32<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> io::Result<f32> {
     let mut buf = [0u8; 4];
     reader.read_exact(&mut buf)?;
     if let Some(h) = hasher {
@@ -155,14 +167,14 @@ fn usize_from_u64(value: u64) -> Result<usize, RabitqError> {
         .map_err(|_| RabitqError::InvalidPersistence("value exceeds platform limits"))
 }
 
-fn metric_to_tag(metric: Metric) -> u8 {
+pub(crate) fn metric_to_tag(metric: Metric) -> u8 {
     match metric {
         Metric::L2 => 0,
         Metric::InnerProduct => 1,
     }
 }
 
-fn tag_to_metric(tag: u8) -> Option<Metric> {
+pub(crate) fn tag_to_metric(tag: u8) -> Option<Metric> {
     match tag {
         0 => Some(Metric::L2),
         1 => Some(Metric::InnerProduct),
