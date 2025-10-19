@@ -210,118 +210,72 @@ fn benchmark_with_sweep(
     groundtruth: &[Vec<usize>],
     top_k: usize,
 ) -> CliResult<()> {
-    let test_rounds = 5;
-
-    // Define nprobe sweep
-    let mut all_nprobes = vec![5];
-    for i in (10..200).step_by(10) {
+    // Define nprobe sweep with larger intervals
+    let mut all_nprobes = vec![5, 10, 20, 30, 40, 50];
+    for i in (60..200).step_by(20) {
         all_nprobes.push(i);
     }
-    for i in (200..400).step_by(40) {
+    for i in (200..=500).step_by(50) {
         all_nprobes.push(i);
     }
-    for i in (400..=1500).step_by(100) {
+    for i in (600..=1000).step_by(100) {
         all_nprobes.push(i);
     }
-    for i in (2000..=4000).step_by(500) {
-        all_nprobes.push(i);
-    }
-    all_nprobes.extend_from_slice(&[6000, 10000, 15000]);
 
     println!("\nPerforming nprobe sweep...");
-    let nprobes = determine_nprobes(index, &all_nprobes, queries, groundtruth, top_k);
+    println!("\n{:<10} {:<12} {:<12} {:<12}", "nprobe", "recall", "QPS", "latency(ms)");
+    println!("{}", "-".repeat(50));
 
-    println!("\n=== Running {}-round benchmark ===", test_rounds);
-    println!("Selected nprobes: {:?}", nprobes);
+    let mut prev_recall = 0.0f32;
 
-    let mut all_qps = vec![vec![0.0f32; nprobes.len()]; test_rounds];
-    let mut all_recall = vec![vec![0.0f32; nprobes.len()]; test_rounds];
+    for &nprobe in &all_nprobes {
+        let actual_nprobe = nprobe.min(index.cluster_count());
+        let params = MstgSearchParams::new(top_k, actual_nprobe);
 
-    for round in 0..test_rounds {
-        for (idx, &nprobe) in nprobes.iter().enumerate() {
-            let actual_nprobe = nprobe.min(index.cluster_count());
-            let params = MstgSearchParams::new(top_k, actual_nprobe);
+        let start = Instant::now();
 
-            let mut total_correct = 0;
-            let start = Instant::now();
+        // Parallel search with latency tracking
+        let results: Vec<(usize, Duration)> = queries
+            .par_iter()
+            .enumerate()
+            .map(|(i, query)| {
+                let query_start = Instant::now();
+                let results = index.search(query, params).expect("search failed");
+                let latency = query_start.elapsed();
 
-            for (i, query) in queries.iter().enumerate() {
-                let results = index.search(query, params)?;
                 let gt_set: HashSet<usize> = groundtruth[i].iter().take(top_k).copied().collect();
-                total_correct += results
+                let correct = results
                     .iter()
                     .take(top_k)
                     .filter(|r| gt_set.contains(&r.id))
                     .count();
-            }
 
-            let elapsed = start.elapsed().as_secs_f64();
-            all_qps[round][idx] = (queries.len() as f64 / elapsed) as f32;
-            all_recall[round][idx] = total_correct as f32 / (queries.len() * top_k) as f32;
-        }
-    }
+                (correct, latency)
+            })
+            .collect();
 
-    // Average across rounds
-    let avg_qps: Vec<f32> = (0..nprobes.len())
-        .map(|i| all_qps.iter().map(|r| r[i]).sum::<f32>() / test_rounds as f32)
-        .collect();
-    let avg_recall: Vec<f32> = (0..nprobes.len())
-        .map(|i| all_recall.iter().map(|r| r[i]).sum::<f32>() / test_rounds as f32)
-        .collect();
-
-    println!("\n{:<10} {:<12} {:<10}", "nprobe", "QPS", "recall");
-    println!("{}", "-".repeat(35));
-    for (i, &nprobe) in nprobes.iter().enumerate() {
-        println!(
-            "{:<10} {:<12.2} {:<10.5}",
-            nprobe, avg_qps[i], avg_recall[i]
-        );
-    }
-
-    Ok(())
-}
-
-fn determine_nprobes(
-    index: &MstgRabitqIndex,
-    all_nprobes: &[usize],
-    queries: &[Vec<f32>],
-    groundtruth: &[Vec<usize>],
-    top_k: usize,
-) -> Vec<usize> {
-    let mut selected = Vec::new();
-    let mut prev_recall = 0.0f32;
-
-    println!("\n{:<10} {:<10}", "recall", "nprobe");
-    println!("{}", "-".repeat(25));
-
-    for &nprobe in all_nprobes {
-        selected.push(nprobe);
-
-        let actual_nprobe = nprobe.min(index.cluster_count());
-        let params = MstgSearchParams::new(top_k, actual_nprobe);
-
-        let mut total_correct = 0;
-        for (i, query) in queries.iter().enumerate() {
-            let results = index.search(query, params).expect("search failed");
-            let gt_set: HashSet<usize> = groundtruth[i].iter().take(top_k).copied().collect();
-            total_correct += results
-                .iter()
-                .take(top_k)
-                .filter(|r| gt_set.contains(&r.id))
-                .count();
-        }
+        let elapsed = start.elapsed().as_secs_f64();
+        let total_correct: usize = results.iter().map(|(c, _)| c).sum();
+        let avg_latency_ms: f64 = results.iter()
+            .map(|(_, l)| l.as_secs_f64() * 1000.0)
+            .sum::<f64>() / results.len() as f64;
 
         let recall = total_correct as f32 / (queries.len() * top_k) as f32;
-        println!("{:<10.5} {:<10}", recall, nprobe);
+        let qps = queries.len() as f64 / elapsed;
 
-        // Stop if recall > 99.7% or improvement < 0.00001
-        if recall > 0.997 || (recall - prev_recall).abs() < 1e-5 {
+        println!(
+            "{:<10} {:<12.5} {:<12.2} {:<12.2}",
+            nprobe, recall, qps, avg_latency_ms
+        );
+
+        // Stop if recall > 99% or improvement < 0.001
+        if recall > 0.99 || (recall - prev_recall).abs() < 0.001 {
             break;
         }
         prev_recall = recall;
     }
 
-    selected
+    Ok(())
 }
 
 #[derive(Debug)]
