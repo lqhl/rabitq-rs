@@ -49,7 +49,7 @@ impl Default for MstgConfig {
             use_faster_config: false,
             hnsw_m: 16,
             hnsw_ef_construction: 200,
-            hnsw_ef_search: 400,
+            hnsw_ef_search: 1000, // High ef_search for better recall (HNSW sets this internally)
         }
     }
 }
@@ -488,6 +488,11 @@ impl MstgRabitqIndex {
             vector: rotated_query.clone(),
         };
 
+        // Use HNSW to find nearest clusters
+        // Note: The instant-distance library's HNSW.search() internally sets search.ef
+        // to the ef_search value configured in the Builder. We set a high default (1000)
+        // to ensure good recall across different nprobe values. The HNSW will return up to
+        // ef_search neighbors, which we then filter down to nprobe below.
         let mut search = Search::default();
         let neighbors: Vec<_> = self.hnsw.search(&query_medoid, &mut search).collect();
 
@@ -841,9 +846,9 @@ impl MstgRabitqIndex {
             })
             .collect();
 
-        // Use default ef_search of 400 when rebuilding
-        let hnsw = Self::build_hnsw(&medoids, 16, 200, 400)?;
-        println!("HNSW index rebuilt (ef_search=400)");
+        // Use high ef_search when rebuilding to ensure good recall
+        let hnsw = Self::build_hnsw(&medoids, 16, 200, 1000)?;
+        println!("HNSW index rebuilt (ef_search=1000)");
 
         Ok(Self {
             dim,

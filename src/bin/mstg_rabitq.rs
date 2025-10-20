@@ -60,7 +60,7 @@ fn run(config: Config) -> CliResult<()> {
         use_faster_config: config.faster_config,
         hnsw_m: 16,
         hnsw_ef_construction: 200,
-        hnsw_ef_search: 400,
+        hnsw_ef_search: 1000, // High ef_search for better recall
     };
 
     let start = Instant::now();
