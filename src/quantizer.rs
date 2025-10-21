@@ -11,7 +11,7 @@ const K_NENUM: f64 = 10.0;
 const K_CONST_EPSILON: f32 = 1.9;
 
 /// Configuration for RaBitQ quantisation.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct RabitqConfig {
     pub total_bits: usize,
     /// Precomputed constant scaling factor for faster quantization.
@@ -45,12 +45,18 @@ impl RabitqConfig {
     }
 }
 
+impl Default for RabitqConfig {
+    fn default() -> Self {
+        Self::new(7) // Default to 7 bits as per MSTG spec
+    }
+}
+
 /// Quantised representation of a vector using packed format (aligned with C++ implementation).
 ///
 /// Binary codes and extended codes are stored in bit-packed format for memory efficiency.
 /// - `binary_code_packed`: 1 bit per dimension
 /// - `ex_code_packed`: ex_bits per dimension
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QuantizedVector {
     /// Full code (binary_code | ex_code), kept for backward compatibility
     pub code: Vec<u16>,
