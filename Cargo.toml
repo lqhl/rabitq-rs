@@ -29,7 +29,7 @@ parking_lot = "0.12"
 half = "2.3"  # For FP16 support (future use)
 
 # HNSW implementation
-instant-distance = "0.6"  # Selected: Minimal deps, fast, no edition2024 requirement
+hnsw_rs = "0.2"  # High-performance HNSW implementation with parallel construction
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["std"] }

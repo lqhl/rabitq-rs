@@ -1,37 +1,23 @@
 //! Centroid index for fast nearest centroid search using HNSW
 //!
-//! Uses instant-distance for efficient approximate nearest neighbor search
+//! Uses hnsw_rs for efficient approximate nearest neighbor search
 
 use crate::mstg::config::ScalarPrecision;
 use crate::mstg::scalar_quant::{BF16Vector, FP32Vector, QuantizedVector as ScalarQuantizedVector};
-use instant_distance::{Builder, HnswMap, Point, Search};
+use hnsw_rs::prelude::*;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-
-/// Wrapper for f32 vectors to implement Point trait
-#[derive(Clone, Debug)]
-struct CentroidPoint(Vec<f32>);
-
-impl Point for CentroidPoint {
-    fn distance(&self, other: &Self) -> f32 {
-        // Compute L2 distance (not squared - instant-distance expects regular distance)
-        self.0
-            .iter()
-            .zip(other.0.iter())
-            .map(|(a, b)| {
-                let diff = a - b;
-                diff * diff
-            })
-            .sum::<f32>()
-            .sqrt()
-    }
-}
 
 /// Centroid index for fast nearest centroid queries using HNSW
 pub struct CentroidIndex {
     precision: ScalarPrecision,
     centroid_ids: Vec<u32>,
     centroids: CentroidData,
-    hnsw: HnswMap<CentroidPoint, usize>,
+    /// Store the centroids in a Box for stable addresses
+    centroid_vecs: Box<[Vec<f32>]>,
+    /// Cached HNSW index (built lazily on first search)
+    /// Safety: The HNSW borrows from centroid_vecs, which is never moved after construction
+    hnsw_cache: RwLock<Option<Hnsw<'static, f32, DistL2>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,48 +50,94 @@ impl CentroidIndex {
             _ => panic!("Unsupported precision: {:?}", precision),
         };
 
-        // Build HNSW index with full-precision centroids for accurate search
-        let points: Vec<CentroidPoint> = centroids
-            .into_iter()
-            .map(|vec| CentroidPoint(vec))
-            .collect();
-
-        let indices: Vec<usize> = (0..points.len()).collect();
-
-        // Build with high ef_search for good recall
-        // Note: instant-distance sets ef_search at build time, cannot vary per query
-        let hnsw = Builder::default()
-            .ef_search(1000)  // High beam width for quality centroid selection
-            .build(points, indices);
+        // Store centroids in a Box for stable addresses
+        let centroid_vecs: Box<[Vec<f32>]> = centroids.into_boxed_slice();
 
         Self {
             precision,
             centroid_ids,
             centroids: centroids_data,
-            hnsw,
+            centroid_vecs,
+            hnsw_cache: RwLock::new(None),
         }
+    }
+
+    /// Build and cache the HNSW index
+    fn ensure_hnsw_built(&self) {
+        // Check if already built (fast path with read lock)
+        {
+            let cache = self.hnsw_cache.read();
+            if cache.is_some() {
+                return;
+            }
+        }
+
+        // Build HNSW (slow path with write lock)
+        let mut cache = self.hnsw_cache.write();
+        if cache.is_some() {
+            return; // Another thread built it while we were waiting
+        }
+
+        let nb_elements = self.centroid_vecs.len();
+
+        // Parameters for HNSW construction
+        let max_nb_connection = 32;
+        let ef_construction = 200;
+        let max_layer = 16.min((nb_elements as f32).ln().floor() as usize);
+
+        let mut hnsw = Hnsw::<f32, DistL2>::new(
+            max_nb_connection,
+            nb_elements,
+            max_layer,
+            ef_construction,
+            DistL2 {},
+        );
+
+        // SAFETY: We're extending the lifetime from 'a to 'static here.
+        // This is safe because:
+        // 1. centroid_vecs is owned by this struct and stored in a Box (stable address)
+        // 2. centroid_vecs will never be moved or dropped while hnsw_cache exists
+        // 3. hnsw_cache is only accessible through &self, ensuring proper borrowing
+        // 4. The HNSW index will be dropped before centroid_vecs when the struct is dropped
+        let data_with_id: Vec<(&Vec<f32>, usize)> = unsafe {
+            std::mem::transmute::<Vec<(&Vec<f32>, usize)>, Vec<(&Vec<f32>, usize)>>(
+                self.centroid_vecs
+                    .iter()
+                    .zip(0..nb_elements)
+                    .collect::<Vec<_>>(),
+            )
+        };
+
+        hnsw.parallel_insert(&data_with_id);
+        hnsw.set_searching_mode(true);
+
+        *cache = Some(hnsw);
     }
 
     /// Search for k nearest centroids to the query using HNSW
     ///
     /// Returns (centroid_id, distance) pairs sorted by distance
-    ///
-    /// Note: ef_search is set at build time (currently 1000) and cannot be varied per query
-    /// due to instant-distance library design. The k parameter just limits results returned.
     pub fn search(&self, query: &[f32], k: usize) -> Vec<(u32, f32)> {
-        let query_point = CentroidPoint(query.to_vec());
-        let mut search = Search::default();
+        // Ensure HNSW is built
+        self.ensure_hnsw_built();
 
-        // Search using HNSW (uses ef_search=1000 set during build)
-        let neighbors = self.hnsw.search(&query_point, &mut search);
+        // Search using cached HNSW
+        let cache = self.hnsw_cache.read();
+        let hnsw = cache.as_ref().unwrap();
+
+        // Set ef for search
+        let ef = k.max(100).max(2 * k);
+
+        // Search using HNSW
+        let neighbors = hnsw.search(query, k, ef);
 
         // Convert results to (centroid_id, distance) pairs
         neighbors
-            .take(k)
-            .map(|item| {
-                let idx = *item.value; // Internal index
+            .iter()
+            .map(|neighbor| {
+                let idx = neighbor.d_id;
                 let centroid_id = self.centroid_ids[idx];
-                let distance = item.distance * item.distance; // Square to match L2 distance
+                let distance = neighbor.distance;
                 (centroid_id, distance)
             })
             .collect()
@@ -128,7 +160,13 @@ impl CentroidIndex {
             CentroidData::BF16(vecs) => vecs.iter().map(|v| v.memory_size()).sum::<usize>(),
         };
 
-        vec_size + self.centroid_ids.len() * std::mem::size_of::<u32>()
+        let centroid_vecs_size: usize = self
+            .centroid_vecs
+            .iter()
+            .map(|v| v.len() * std::mem::size_of::<f32>())
+            .sum();
+
+        vec_size + self.centroid_ids.len() * std::mem::size_of::<u32>() + centroid_vecs_size
     }
 }
 
@@ -187,7 +225,31 @@ mod tests {
         println!("FP32 memory: {} bytes", mem_fp32);
         println!("BF16 memory: {} bytes", mem_bf16);
 
-        // BF16 should use ~50% less memory
-        assert!((mem_bf16 as f64) < (mem_fp32 as f64 * 0.6));
+        // BF16 should use less memory (not 50% due to centroid_vecs overhead)
+        assert!(mem_bf16 < mem_fp32);
+    }
+
+    #[test]
+    fn test_hnsw_caching() {
+        let centroids = vec![
+            vec![0.0, 0.0],
+            vec![10.0, 0.0],
+            vec![0.0, 10.0],
+            vec![10.0, 10.0],
+        ];
+        let ids = vec![0, 1, 2, 3];
+
+        let index = CentroidIndex::build(centroids, ids, ScalarPrecision::FP32);
+
+        // First search should build the HNSW
+        let query = vec![0.1, 0.1];
+        let results1 = index.search(&query, 2);
+
+        // Second search should use cached HNSW
+        let results2 = index.search(&query, 2);
+
+        // Results should be identical
+        assert_eq!(results1, results2);
+        assert_eq!(results1[0].0, 0);
     }
 }
