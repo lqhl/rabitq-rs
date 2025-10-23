@@ -80,7 +80,10 @@ fn benchmark_mstg(
     let index = MstgIndex::build(data, config).expect("Failed to build MSTG index");
     let build_time_ms = start.elapsed().as_secs_f64() * 1000.0;
 
-    println!("[MSTG] Index built: {} posting lists", index.posting_lists.len());
+    println!(
+        "[MSTG] Index built: {} posting lists",
+        index.posting_lists.len()
+    );
     println!("[MSTG] Running searches...");
 
     // Warmup
@@ -152,7 +155,7 @@ fn benchmark_ivf(
         7, // total_bits
         Metric::L2,
         RotatorType::MatrixRotator,
-        42, // seed
+        42,   // seed
         true, // use_faster_config
     )
     .expect("Failed to build IVF index");
@@ -163,10 +166,7 @@ fn benchmark_ivf(
 
     // Warmup
     for query in queries.iter().take(10) {
-        let params = SearchParams {
-            nprobe,
-            top_k: 100,
-        };
+        let params = SearchParams { nprobe, top_k: 100 };
         let _ = index.search(query, params);
     }
 
@@ -175,10 +175,7 @@ fn benchmark_ivf(
     let mut all_results = Vec::new();
 
     for query in queries.iter() {
-        let params = SearchParams {
-            nprobe,
-            top_k: 100,
-        };
+        let params = SearchParams { nprobe, top_k: 100 };
         let results = index.search(query, params).unwrap();
         all_results.push(results.iter().map(|r| r.id).collect::<Vec<_>>());
     }
@@ -241,8 +238,8 @@ fn main() {
         .expect("Failed to load base vectors");
     let queries =
         read_fvecs("data/gist/gist_query.fvecs", None).expect("Failed to load query vectors");
-    let ground_truth = read_ivecs("data/gist/gist_groundtruth.ivecs", None)
-        .expect("Failed to load ground truth");
+    let ground_truth =
+        read_ivecs("data/gist/gist_groundtruth.ivecs", None).expect("Failed to load ground truth");
 
     let dim = data[0].len();
     println!("\n📊 Dataset Statistics:");
@@ -291,10 +288,16 @@ fn main() {
     println!("\n  🚀 Search Speed:");
     if search_speedup > 1.0 {
         println!("      → MSTG is {:.2}x FASTER", search_speedup);
-        println!("      → MSTG: {:.0} QPS vs IVF: {:.0} QPS", mstg_result.qps, ivf_result.qps);
+        println!(
+            "      → MSTG: {:.0} QPS vs IVF: {:.0} QPS",
+            mstg_result.qps, ivf_result.qps
+        );
     } else {
         println!("      → IVF is {:.2}x FASTER", 1.0 / search_speedup);
-        println!("      → IVF: {:.0} QPS vs MSTG: {:.0} QPS", ivf_result.qps, mstg_result.qps);
+        println!(
+            "      → IVF: {:.0} QPS vs MSTG: {:.0} QPS",
+            ivf_result.qps, mstg_result.qps
+        );
     }
 
     println!("\n  🎯 Recall Quality:");

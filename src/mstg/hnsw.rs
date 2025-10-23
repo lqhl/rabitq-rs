@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 /// Centroid index for fast nearest centroid queries using HNSW
 pub struct CentroidIndex {
+    #[allow(dead_code)]
     precision: ScalarPrecision,
     centroid_ids: Vec<u32>,
     centroids: CentroidData,
@@ -116,8 +117,10 @@ impl CentroidIndex {
 
     /// Search for k nearest centroids to the query using HNSW
     ///
+    /// `k` parameter is the ef_search value from SearchParams
+    ///
     /// Returns (centroid_id, distance) pairs sorted by distance
-    pub fn search(&self, query: &[f32], k: usize) -> Vec<(u32, f32)> {
+    pub fn search(&self, query: &[f32], ef_search: usize) -> Vec<(u32, f32)> {
         // Ensure HNSW is built
         self.ensure_hnsw_built();
 
@@ -125,11 +128,9 @@ impl CentroidIndex {
         let cache = self.hnsw_cache.read();
         let hnsw = cache.as_ref().unwrap();
 
-        // Set ef for search
-        let ef = k.max(100).max(2 * k);
-
-        // Search using HNSW
-        let neighbors = hnsw.search(query, k, ef);
+        // Use ef_search directly as the HNSW ef parameter
+        // Return ef_search results (will be pruned later by dynamic pruning)
+        let neighbors = hnsw.search(query, ef_search, ef_search);
 
         // Convert results to (centroid_id, distance) pairs
         neighbors

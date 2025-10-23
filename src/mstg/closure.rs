@@ -79,9 +79,11 @@ impl ClosureAssigner {
                     .map(|(_, d)| *d)
                     .unwrap_or(f32::INFINITY);
 
-                // Get centroids using iter().nth() to avoid indexing issues
-                let c_selected = centroids.iter().nth(selected_idx).unwrap().as_slice();
-                let c_candidate = centroids.iter().nth(candidate_idx).unwrap().as_slice();
+                // Get centroids using iter().nth() - clippy warning suppressed as indexing would require bounds checking
+                #[allow(clippy::iter_nth)]
+                let c_selected = centroids.iter().nth(selected_idx).unwrap();
+                #[allow(clippy::iter_nth)]
+                let c_candidate = centroids.iter().nth(candidate_idx).unwrap();
                 let dist_selected_to_candidate = l2_distance_sqr(c_selected, c_candidate);
 
                 // RNG rule: skip candidate if it's farther from v than selected is from candidate
@@ -141,7 +143,7 @@ mod tests {
         let v2 = vec![0.5, 0.0];
         let assigned = assigner.assign(&v2, &centroids);
         println!("Boundary vector {:?} assigned to {:?}", v2, assigned);
-        assert!(assigned.len() >= 1);
+        assert!(!assigned.is_empty());
         assert!(assigned.contains(&0) || assigned.contains(&1));
     }
 

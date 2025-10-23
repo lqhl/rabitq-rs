@@ -7,6 +7,7 @@
 
 // Core data structures
 pub mod config;
+pub mod distance;
 pub mod metadata;
 pub mod posting_list;
 pub mod scalar_quant;

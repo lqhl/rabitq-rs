@@ -137,7 +137,11 @@ fn benchmark_mstg(
         / queries.len() as f32;
 
     // Estimate memory (rough approximation)
-    let memory_mb = index.posting_lists.iter().map(|p| p.memory_size()).sum::<usize>() as f32
+    let memory_mb = index
+        .posting_lists
+        .iter()
+        .map(|p| p.memory_size())
+        .sum::<usize>() as f32
         / (1024.0 * 1024.0);
 
     BenchmarkResult {
@@ -166,7 +170,7 @@ fn benchmark_ivf(
         7, // total_bits
         Metric::L2,
         RotatorType::MatrixRotator,
-        42, // seed
+        42,   // seed
         true, // use_faster_config
     )
     .expect("Failed to build IVF index");
@@ -179,10 +183,7 @@ fn benchmark_ivf(
 
     // Warmup
     for query in queries.iter().take(10) {
-        let params = SearchParams {
-            nprobe,
-            top_k: 100,
-        };
+        let params = SearchParams { nprobe, top_k: 100 };
         let _ = index.search(query, params);
     }
 
@@ -192,17 +193,11 @@ fn benchmark_ivf(
     let mut all_results_100 = Vec::new();
 
     for query in queries.iter() {
-        let params_10 = SearchParams {
-            nprobe,
-            top_k: 10,
-        };
+        let params_10 = SearchParams { nprobe, top_k: 10 };
         let results_10 = index.search(query, params_10).unwrap();
         all_results_10.push(results_10.iter().map(|r| r.id).collect::<Vec<_>>());
 
-        let params_100 = SearchParams {
-            nprobe,
-            top_k: 100,
-        };
+        let params_100 = SearchParams { nprobe, top_k: 100 };
         let results_100 = index.search(query, params_100).unwrap();
         all_results_100.push(results_100.iter().map(|r| r.id).collect::<Vec<_>>());
     }

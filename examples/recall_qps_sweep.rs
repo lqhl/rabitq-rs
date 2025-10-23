@@ -86,7 +86,11 @@ fn sweep_mstg(
 
             println!(
                 "  ef={:4}, eps={:.1}: recall={:.1}%, latency={:.2}ms, qps={:.0}",
-                ef_search, epsilon, recall_100 * 100.0, avg_latency_ms, qps
+                ef_search,
+                epsilon,
+                recall_100 * 100.0,
+                avg_latency_ms,
+                qps
             );
 
             results.push(point);
@@ -151,7 +155,10 @@ fn sweep_ivf(
 
         println!(
             "  nprobe={:4}: recall={:.1}%, latency={:.2}ms, qps={:.0}",
-            nprobe, recall_100 * 100.0, avg_latency_ms, qps
+            nprobe,
+            recall_100 * 100.0,
+            avg_latency_ms,
+            qps
         );
 
         results.push(point);
@@ -181,8 +188,8 @@ fn main() {
         .expect("Failed to load base vectors");
     let queries =
         read_fvecs("data/gist/gist_query.fvecs", None).expect("Failed to load query vectors");
-    let ground_truth = read_ivecs("data/gist/gist_groundtruth.ivecs", None)
-        .expect("Failed to load ground truth");
+    let ground_truth =
+        read_ivecs("data/gist/gist_groundtruth.ivecs", None).expect("Failed to load ground truth");
 
     let dim = data[0].len();
     println!("\n📊 Dataset Statistics:");
@@ -229,7 +236,11 @@ fn main() {
     )
     .expect("Failed to build IVF index");
     let ivf_build_time = ivf_start.elapsed();
-    println!("  ✓ IVF built in {:.2}s (nlist={})", ivf_build_time.as_secs_f64(), nlist);
+    println!(
+        "  ✓ IVF built in {:.2}s (nlist={})",
+        ivf_build_time.as_secs_f64(),
+        nlist
+    );
 
     // Run sweeps
     let mstg_points = sweep_mstg(&mstg_index, &queries, &ground_truth);
@@ -241,22 +252,34 @@ fn main() {
     println!("╚════════════════════════════════════════════════════════════════╝\n");
 
     println!("MSTG Results:");
-    println!("{:30} {:>10} {:>12} {:>10}", "Config", "Recall@100", "Latency(ms)", "QPS");
+    println!(
+        "{:30} {:>10} {:>12} {:>10}",
+        "Config", "Recall@100", "Latency(ms)", "QPS"
+    );
     println!("{}", "-".repeat(70));
     for point in &mstg_points {
         println!(
             "{:30} {:>9.1}% {:>12.2} {:>10.0}",
-            point.config, point.recall_at_100 * 100.0, point.avg_latency_ms, point.qps
+            point.config,
+            point.recall_at_100 * 100.0,
+            point.avg_latency_ms,
+            point.qps
         );
     }
 
     println!("\nIVF Results:");
-    println!("{:30} {:>10} {:>12} {:>10}", "Config", "Recall@100", "Latency(ms)", "QPS");
+    println!(
+        "{:30} {:>10} {:>12} {:>10}",
+        "Config", "Recall@100", "Latency(ms)", "QPS"
+    );
     println!("{}", "-".repeat(70));
     for point in &ivf_points {
         println!(
             "{:30} {:>9.1}% {:>12.2} {:>10.0}",
-            point.config, point.recall_at_100 * 100.0, point.avg_latency_ms, point.qps
+            point.config,
+            point.recall_at_100 * 100.0,
+            point.avg_latency_ms,
+            point.qps
         );
     }
 
@@ -319,7 +342,10 @@ fn main() {
             if speedup > 1.0 {
                 println!("  → MSTG is {:.1}x faster at similar recall\n", speedup);
             } else {
-                println!("  → IVF is {:.1}x faster at similar recall\n", 1.0 / speedup);
+                println!(
+                    "  → IVF is {:.1}x faster at similar recall\n",
+                    1.0 / speedup
+                );
             }
         }
     }

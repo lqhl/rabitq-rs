@@ -6,7 +6,9 @@ use rand::prelude::*;
 
 fn generate_test_data(n: usize, dim: usize) -> Vec<Vec<f32>> {
     let mut rng = StdRng::seed_from_u64(42);
-    (0..n).map(|_| (0..dim).map(|_| rng.gen()).collect()).collect()
+    (0..n)
+        .map(|_| (0..dim).map(|_| rng.gen()).collect())
+        .collect()
 }
 
 fn main() {
@@ -16,7 +18,10 @@ fn main() {
     // Generate test data
     let n_vectors = 1000;
     let dim = 128;
-    println!("Generating {} random {}-dimensional vectors...", n_vectors, dim);
+    println!(
+        "Generating {} random {}-dimensional vectors...",
+        n_vectors, dim
+    );
     let data = generate_test_data(n_vectors, dim);
 
     // Configure MSTG
@@ -56,8 +61,7 @@ fn main() {
 
     let params = SearchParams::balanced(top_k);
 
-    for i in 0..n_queries {
-        let query = &data[i];
+    for (i, query) in data.iter().enumerate().take(n_queries) {
         let results = index.search(query, &params);
 
         println!("\nQuery {}: Found {} results", i, results.len());
@@ -72,7 +76,9 @@ fn main() {
         }
 
         // Verify that the query itself is in top results (should have very small distance)
-        let has_self = results.iter().any(|r| r.vector_id == i && r.distance < 0.01);
+        let has_self = results
+            .iter()
+            .any(|r| r.vector_id == i && r.distance < 0.01);
         if has_self {
             println!("  ✓ Query found itself with near-zero distance");
         }

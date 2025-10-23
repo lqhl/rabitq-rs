@@ -84,59 +84,11 @@ impl PostingList {
         Ok(())
     }
 
-    /// Estimate distance from query to a quantized vector in this posting list
+    /// Get ex_bits for this posting list's RaBitQ config
     ///
-    /// This computes the approximate L2 distance using the quantized representation
-    pub fn estimate_distance(&self, query: &[f32], vec_idx: usize) -> Option<f32> {
-        use crate::math::l2_distance_sqr;
-
-        if vec_idx >= self.vectors.len() {
-            return None;
-        }
-
-        let qvec = &self.vectors[vec_idx];
-
-        // Compute centroid distance component (g_add)
-        let g_add = l2_distance_sqr(query, &self.centroid);
-
-        // Unpack binary code and compute centered version (bit - 0.5)
-        let binary_code = qvec.quantized.unpack_binary_code();
-
-        // Compute dot product with query using centered binary code
-        let mut binary_dot = 0.0f32;
-        for (&bit, &q_val) in binary_code.iter().zip(query.iter()) {
-            binary_dot += (bit as f32) * q_val;
-        }
-
-        // Compute sum of query values for the offset term
-        let sum_query: f32 = query.iter().sum();
-        let c1 = -0.5f32;
-        let k1x_sum_q = c1 * sum_query;
-
-        let binary_term = binary_dot + k1x_sum_q;
-
-        // Basic estimate: f_add + g_add + f_rescale * binary_term
-        let est_distance = qvec.quantized.f_add + g_add + qvec.quantized.f_rescale * binary_term;
-
-        // Use extended code if available for better accuracy
-        let distance = if qvec.quantized.ex_bits > 0 {
-            let ex_code = qvec.quantized.unpack_ex_code();
-            let mut ex_dot = 0.0f32;
-            for (&code, &q_val) in ex_code.iter().zip(query.iter()) {
-                ex_dot += (code as f32) * q_val;
-            }
-
-            let binary_scale = (1 << qvec.quantized.ex_bits) as f32;
-            let cb = -((1 << qvec.quantized.ex_bits) as f32 - 0.5);
-            let kbx_sum_q = cb * sum_query;
-            let total_term = binary_scale * binary_dot + ex_dot + kbx_sum_q;
-
-            qvec.quantized.f_add_ex + g_add + qvec.quantized.f_rescale_ex * total_term
-        } else {
-            est_distance
-        };
-
-        Some(distance)
+    /// Returns the number of extended bits used in quantization
+    pub fn ex_bits(&self) -> u8 {
+        self.rabitq_config.total_bits.saturating_sub(1) as u8
     }
 
     /// Estimate memory size in bytes

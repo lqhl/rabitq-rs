@@ -138,26 +138,37 @@ impl MstgIndex {
 
     /// Search for k nearest neighbors
     pub fn search(&self, query: &[f32], params: &SearchParams) -> Vec<SearchResult> {
+        use crate::mstg::distance::{estimate_distance, QueryContext};
+
         // Step 1: Find candidate centroids
         let centroid_candidates = self.centroid_index.search(query, params.ef_search);
 
         // Step 2: Dynamic pruning
         let selected_centroids = self.dynamic_prune(&centroid_candidates, params.pruning_epsilon);
 
-        // Step 3: Search posting lists
+        // Step 3: Search posting lists with optimized distance estimation
         let mut all_candidates: Vec<(u64, f32)> = selected_centroids
             .par_iter()
             .flat_map(|&cid| {
                 let plist = &self.posting_lists[cid as usize];
+
+                // Create QueryContext once per posting list (precomputes constants)
+                let ctx = QueryContext::new(query, plist.ex_bits());
+
+                // Compute distances to all vectors using precomputed constants
                 plist
                     .vectors
                     .iter()
-                    .enumerate()
-                    .filter_map(|(vec_idx, qvec)| {
-                        plist
-                            .estimate_distance(query, vec_idx)
-                            .map(|dist| (qvec.vector_id, dist))
+                    .map(|qvec| {
+                        let dist = estimate_distance(
+                            &ctx,
+                            &plist.centroid,
+                            &qvec.quantized,
+                            self.config.metric,
+                        );
+                        (qvec.vector_id, dist)
                     })
+                    .filter(|(_, dist)| dist.is_finite()) // Filter out invalid distances
                     .collect::<Vec<_>>()
             })
             .collect();
@@ -223,7 +234,7 @@ mod tests {
         let index = MstgIndex::build(&data, config).unwrap();
 
         assert!(!index.posting_lists.is_empty());
-        assert!(index.centroid_index.len() > 0);
+        assert!(!index.centroid_index.is_empty());
     }
 
     #[test]
