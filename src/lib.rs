@@ -4,6 +4,7 @@ pub mod brute_force;
 pub mod index;
 pub mod io;
 pub mod ivf;
+pub mod mstg;
 
 mod kmeans;
 mod math;
@@ -24,7 +25,7 @@ pub use roaring::RoaringBitmap;
 mod tests;
 
 /// Distance metric supported by the RaBitQ IVF index.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Metric {
     /// Euclidean distance (L2).
     L2,
