@@ -1,8 +1,8 @@
 [package]
 name = "rabitq-rs"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
-description = "Rust implementation of the RaBitQ quantization scheme with IVF search tooling"
+description = "Advanced vector search: RaBitQ quantization with IVF and MSTG (Multi-Scale Tree Graph) index"
 license = "Apache-2.0"
 readme = "README.md"
 authors = ["Qin Liu <lqgy2001@gmail.com>"]
