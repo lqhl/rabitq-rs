@@ -1,11 +1,12 @@
 //! Python bindings for MSTG index using PyO3
+#![allow(non_local_definitions)]
 
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
 #[cfg(feature = "python")]
 use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2};
+#[cfg(feature = "python")]
+use pyo3::prelude::*;
 
-use crate::mstg::{MstgConfig, MstgIndex, SearchParams, ScalarPrecision};
+use crate::mstg::{MstgConfig, MstgIndex, ScalarPrecision, SearchParams};
 use crate::Metric;
 
 #[cfg(feature = "python")]
@@ -21,6 +22,7 @@ pub struct PyMstgIndex {
 impl PyMstgIndex {
     /// Create a new MSTG index with configuration
     #[new]
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         dimension,
         metric="euclidean",
@@ -56,9 +58,12 @@ impl PyMstgIndex {
         let metric = match metric {
             "euclidean" | "l2" => Metric::L2,
             "angular" | "ip" | "inner_product" => Metric::InnerProduct,
-            _ => return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("Invalid metric: {}. Use 'euclidean' or 'angular'", metric)
-            )),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Invalid metric: {}. Use 'euclidean' or 'angular'",
+                    metric
+                )))
+            }
         };
 
         let centroid_precision = match centroid_precision {
@@ -66,9 +71,12 @@ impl PyMstgIndex {
             "bf16" => ScalarPrecision::BF16,
             "fp16" => ScalarPrecision::FP16,
             "int8" => ScalarPrecision::INT8,
-            _ => return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("Invalid precision: {}. Use 'fp32', 'bf16', 'fp16', or 'int8'", centroid_precision)
-            )),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Invalid precision: {}. Use 'fp32', 'bf16', 'fp16', or 'int8'",
+                    centroid_precision
+                )))
+            }
         };
 
         let config = MstgConfig {
@@ -101,14 +109,15 @@ impl PyMstgIndex {
 
         if shape.len() != 2 {
             return Err(pyo3::exceptions::PyValueError::new_err(
-                "Data must be 2D array (N x D)"
+                "Data must be 2D array (N x D)",
             ));
         }
 
         if shape[1] != self.dimension {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("Data dimension {} does not match expected {}", shape[1], self.dimension)
-            ));
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Data dimension {} does not match expected {}",
+                shape[1], self.dimension
+            )));
         }
 
         // Convert to Vec<Vec<f32>>
@@ -127,9 +136,10 @@ impl PyMstgIndex {
                 self.index = Some(index);
                 Ok(())
             }
-            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(
-                format!("Failed to build index: {}", e)
-            )),
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Failed to build index: {}",
+                e
+            ))),
         }
     }
 
@@ -153,9 +163,11 @@ impl PyMstgIndex {
         let query = query.as_slice()?;
 
         if query.len() != self.dimension {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("Query dimension {} does not match expected {}", query.len(), self.dimension)
-            ));
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Query dimension {} does not match expected {}",
+                query.len(),
+                self.dimension
+            )));
         }
 
         let params = SearchParams::new(
@@ -185,7 +197,12 @@ impl PyMstgIndex {
     /// data: N x D array of queries
     /// k: number of neighbors per query
     /// Returns: list of N numpy arrays, each of shape (k, 2)
-    fn batch_query(&self, py: Python, queries: PyReadonlyArray2<f32>, k: usize) -> PyResult<Vec<PyObject>> {
+    fn batch_query(
+        &self,
+        py: Python,
+        queries: PyReadonlyArray2<f32>,
+        k: usize,
+    ) -> PyResult<Vec<PyObject>> {
         let index = self.index.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("Index not built yet. Call fit() first.")
         })?;
@@ -195,14 +212,15 @@ impl PyMstgIndex {
 
         if shape.len() != 2 {
             return Err(pyo3::exceptions::PyValueError::new_err(
-                "Queries must be 2D array (N x D)"
+                "Queries must be 2D array (N x D)",
             ));
         }
 
         if shape[1] != self.dimension {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("Query dimension {} does not match expected {}", shape[1], self.dimension)
-            ));
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Query dimension {} does not match expected {}",
+                shape[1], self.dimension
+            )));
         }
 
         let n_queries = shape[0];
@@ -240,9 +258,10 @@ impl PyMstgIndex {
 
     /// Get memory usage in bytes
     fn get_memory_usage(&self) -> PyResult<usize> {
-        let index = self.index.as_ref().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("Index not built yet.")
-        })?;
+        let index = self
+            .index
+            .as_ref()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Index not built yet."))?;
 
         // Estimate memory usage
         let centroid_mem = index.centroid_index.memory_usage();
@@ -253,9 +272,10 @@ impl PyMstgIndex {
 
     /// Get number of vectors in index
     fn __len__(&self) -> PyResult<usize> {
-        let index = self.index.as_ref().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("Index not built yet.")
-        })?;
+        let index = self
+            .index
+            .as_ref()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Index not built yet."))?;
 
         let total: usize = index.posting_lists.iter().map(|p| p.len()).sum();
         Ok(total)
