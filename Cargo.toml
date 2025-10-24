@@ -31,16 +31,25 @@ half = "2.3"  # For FP16 support (future use)
 # HNSW implementation
 hnsw_rs = "0.2"  # High-performance HNSW implementation with parallel construction
 
+# Python bindings (optional)
+pyo3 = { version = "0.20", features = ["extension-module", "abi3-py38"], optional = true }
+numpy = { version = "0.20", optional = true }
+
 [dev-dependencies]
 rand = { version = "0.8", features = ["std"] }
 
 [lib]
 name = "rabitq_rs"
 path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
 
 [[bin]]
 name = "ivf_rabitq"
 path = "src/bin/ivf_rabitq.rs"
+
+[features]
+default = []
+python = ["pyo3", "numpy"]
 
 [package.metadata.docs.rs]
 all-features = true

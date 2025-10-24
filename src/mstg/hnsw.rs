@@ -121,6 +121,14 @@ impl CentroidIndex {
     ///
     /// Returns (centroid_id, distance) pairs sorted by distance
     pub fn search(&self, query: &[f32], ef_search: usize) -> Vec<(u32, f32)> {
+        let n = self.centroid_vecs.len();
+
+        // For very small number of centroids, use brute force
+        // HNSW doesn't work well with < 2 centroids
+        if n < 2 {
+            return self.brute_force_search(query, ef_search);
+        }
+
         // Ensure HNSW is built
         self.ensure_hnsw_built();
 
@@ -130,7 +138,7 @@ impl CentroidIndex {
 
         // Use ef_search directly as the HNSW ef parameter
         // Return ef_search results (will be pruned later by dynamic pruning)
-        let neighbors = hnsw.search(query, ef_search, ef_search);
+        let neighbors = hnsw.search(query, ef_search.min(n), ef_search.min(n));
 
         // Convert results to (centroid_id, distance) pairs
         neighbors
@@ -142,6 +150,35 @@ impl CentroidIndex {
                 (centroid_id, distance)
             })
             .collect()
+    }
+
+    /// Brute force search for small number of centroids
+    fn brute_force_search(&self, query: &[f32], k: usize) -> Vec<(u32, f32)> {
+        let mut results: Vec<(u32, f32)> = self
+            .centroid_vecs
+            .iter()
+            .enumerate()
+            .map(|(idx, centroid)| {
+                let dist = Self::l2_distance(query, centroid);
+                (self.centroid_ids[idx], dist)
+            })
+            .collect();
+
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        results.truncate(k);
+        results
+    }
+
+    /// Compute L2 distance between two vectors
+    fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| {
+                let diff = x - y;
+                diff * diff
+            })
+            .sum::<f32>()
+            .sqrt()
     }
 
     /// Get the number of centroids

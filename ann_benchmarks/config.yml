@@ -1,0 +1,82 @@
+rabitq-mstg:
+  docker-tag: ann-benchmarks-rabitq-mstg
+  module: ann_benchmarks.algorithms.rabitq_mstg
+  constructor: RabitqMstg
+  base-args: ["@metric"]
+  run-groups:
+    base:
+      args: |
+        [
+          {
+            "max_posting_size": 50,
+            "branching_factor": 10,
+            "rabitq_bits": 7,
+            "faster_config": True,
+            "centroid_precision": "bf16"
+          }
+        ]
+      query-args: |
+        [
+          {"ef_search": 50, "pruning_epsilon": 0.4},
+          {"ef_search": 100, "pruning_epsilon": 0.5},
+          {"ef_search": 150, "pruning_epsilon": 0.6},
+          {"ef_search": 200, "pruning_epsilon": 0.7},
+          {"ef_search": 300, "pruning_epsilon": 0.8}
+        ]
+
+    high-recall:
+      args: |
+        [
+          {
+            "max_posting_size": 30,
+            "branching_factor": 12,
+            "rabitq_bits": 7,
+            "faster_config": True,
+            "centroid_precision": "bf16",
+            "hnsw_ef_construction": 400
+          }
+        ]
+      query-args: |
+        [
+          {"ef_search": 200, "pruning_epsilon": 0.7},
+          {"ef_search": 300, "pruning_epsilon": 0.8},
+          {"ef_search": 400, "pruning_epsilon": 0.9},
+          {"ef_search": 500, "pruning_epsilon": 1.0}
+        ]
+
+    low-latency:
+      args: |
+        [
+          {
+            "max_posting_size": 80,
+            "branching_factor": 8,
+            "rabitq_bits": 5,
+            "faster_config": True,
+            "centroid_precision": "int8"
+          }
+        ]
+      query-args: |
+        [
+          {"ef_search": 20, "pruning_epsilon": 0.2},
+          {"ef_search": 30, "pruning_epsilon": 0.3},
+          {"ef_search": 50, "pruning_epsilon": 0.4},
+          {"ef_search": 75, "pruning_epsilon": 0.5}
+        ]
+
+    memory-efficient:
+      args: |
+        [
+          {
+            "max_posting_size": 100,
+            "branching_factor": 6,
+            "rabitq_bits": 3,
+            "faster_config": True,
+            "centroid_precision": "int8"
+          }
+        ]
+      query-args: |
+        [
+          {"ef_search": 100, "pruning_epsilon": 0.5},
+          {"ef_search": 150, "pruning_epsilon": 0.6},
+          {"ef_search": 200, "pruning_epsilon": 0.7}
+        ]

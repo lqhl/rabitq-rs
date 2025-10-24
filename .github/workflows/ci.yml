@@ -27,6 +27,11 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -45,7 +50,7 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run tests
+      - name: Run tests (all features)
         run: cargo test --all-features --verbose
 
   fmt:
@@ -75,6 +80,11 @@ jobs:
         with:
           components: clippy
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -93,7 +103,7 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-clippy-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run clippy
+      - name: Run clippy (all features)
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   build:
