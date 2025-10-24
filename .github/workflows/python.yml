@@ -48,16 +48,24 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-python-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Create virtual environment
+        run: python -m venv .venv
+
       - name: Install Python dependencies
         run: |
+          source .venv/bin/activate
           python -m pip install --upgrade pip
           pip install maturin numpy pytest
 
       - name: Build Python package
-        run: maturin develop --release --features python
+        run: |
+          source .venv/bin/activate
+          maturin develop --release --features python
 
       - name: Run Python tests
-        run: python test_python_bindings.py
+        run: |
+          source .venv/bin/activate
+          python test_python_bindings.py
 
   python-build:
     name: Build Python Wheels

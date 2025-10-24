@@ -55,6 +55,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -76,11 +81,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+      - name: Run clippy (all features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Run tests
-        run: cargo test --verbose
+      - name: Run tests (all features)
+        run: cargo test --all-features --verbose
 
       - name: Validate package
         run: cargo package --verbose
