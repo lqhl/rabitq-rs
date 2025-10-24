@@ -6,6 +6,9 @@ pub mod io;
 pub mod ivf;
 pub mod mstg;
 
+#[cfg(feature = "python")]
+pub mod python_bindings;
+
 mod kmeans;
 mod math;
 mod quantizer;

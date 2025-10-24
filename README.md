@@ -223,14 +223,111 @@ cargo run --release --bin ivf_rabitq -- \
     --save data/gist/index.bin
 ```
 
+## Python Bindings
+
+RaBitQ-RS provides Python bindings for the MSTG (Multi-Scale Tree Graph) index, enabling seamless integration with Python machine learning workflows and ann-benchmarks.
+
+### Installation
+
+```bash
+# Install dependencies
+pip install maturin numpy
+
+# Build and install from source
+maturin develop --release --features python
+```
+
+### Quick Start (Python)
+
+```python
+import numpy as np
+from rabitq_rs import MstgIndex
+
+# Generate sample data
+data = np.random.randn(10000, 128).astype(np.float32)
+query = np.random.randn(128).astype(np.float32)
+
+# Create and build index
+index = MstgIndex(
+    dimension=128,
+    metric="euclidean",          # or "angular"
+    max_posting_size=5000,
+    rabitq_bits=7,               # 3-8 bits
+    faster_config=True,          # Fast quantization mode
+    centroid_precision="bf16"    # "fp32", "bf16", "fp16", or "int8"
+)
+
+index.fit(data)
+
+# Search
+index.set_query_arguments(ef_search=150, pruning_epsilon=0.6)
+results = index.query(query, k=10)
+
+# Results: numpy array of shape (k, 2) with [id, distance]
+for neighbor_id, distance in results:
+    print(f"ID: {int(neighbor_id)}, Distance: {distance:.6f}")
+```
+
+### Configuration Parameters
+
+**Index Parameters (Build Time)**:
+- `dimension`: Vector dimensionality (required)
+- `metric`: Distance metric - "euclidean" (L2) or "angular" (inner product)
+- `max_posting_size`: Maximum vectors per cluster (default: 5000)
+- `rabitq_bits`: Quantization bits, 3-8 (default: 7)
+- `faster_config`: Fast quantization mode (default: True)
+- `centroid_precision`: Centroid storage - "fp32", "bf16", "fp16", "int8" (default: "bf16")
+- `hnsw_m`: HNSW connectivity (default: 32)
+- `hnsw_ef_construction`: HNSW build quality (default: 200)
+
+**Query Parameters (Search Time)**:
+- `ef_search`: Centroid candidates to explore (default: 150)
+- `pruning_epsilon`: Dynamic pruning threshold (default: 0.6)
+- `k`: Number of neighbors to return
+
+### Batch Queries
+
+```python
+# Query multiple vectors efficiently
+queries = np.random.randn(100, 128).astype(np.float32)
+results_list = index.batch_query(queries, k=10)
+
+# Returns list of numpy arrays, one per query
+for i, results in enumerate(results_list):
+    print(f"Query {i}: Top neighbor ID = {int(results[0, 0])}")
+```
+
+### Memory Usage
+
+```python
+memory_bytes = index.get_memory_usage()
+print(f"Index size: {memory_bytes / 1024**2:.2f} MB")
+```
+
+### ann-benchmarks Integration
+
+RaBitQ-RS includes a complete ann-benchmarks wrapper for standardized evaluation:
+
+```bash
+# Run benchmarks
+cd ann_benchmarks
+python run.py --algorithm rabitq-mstg --dataset fashion-mnist-784-euclidean
+```
+
+See `ann_benchmarks/README.md` for detailed benchmark configuration and usage.
+
 ## Testing
 
 Run the test suite before committing changes:
 
 ```bash
+# Rust tests
 cargo fmt
 cargo clippy --all-targets --all-features
 cargo test
+
+# Python tests
+python test_python_bindings.py
 ```
 
 All tests use seeded RNGs for reproducible results.
