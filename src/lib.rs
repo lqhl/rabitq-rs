@@ -1,4 +1,5 @@
 #![cfg_attr(target_arch = "x86_64", feature(avx512_target_feature))]
+#![cfg_attr(all(target_arch = "x86_64", feature = "avx512"), feature(stdarch_x86_avx512))]
 
 pub mod brute_force;
 pub mod index;

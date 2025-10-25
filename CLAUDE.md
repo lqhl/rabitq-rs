@@ -12,6 +12,11 @@ This is a pure-Rust implementation of the RaBitQ quantization scheme with IVF (I
 cargo fmt                                    # Format code (run before commits)
 cargo clippy --all-targets --all-features    # Lint (must pass cleanly)
 cargo test                                   # Run unit and integration tests
+
+# SIMD/AVX-512 builds (optional, for maximum performance)
+cargo build --release                        # Stable Rust, uses AVX2 (3-5x speedup)
+cargo +nightly build --release --features avx512  # Nightly, uses AVX-512 (6-10x speedup)
+cargo +nightly test --features avx512        # Test with AVX-512 enabled
 ```
 
 ### Benchmark Evaluation (ivf_rabitq binary)

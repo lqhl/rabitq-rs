@@ -1,3 +1,83 @@
+rabitq-ivf:
+  docker-tag: ann-benchmarks-rabitq-ivf
+  module: ann_benchmarks.algorithms.rabitq_ivf
+  constructor: RabitqIvf
+  base-args: ["@metric"]
+  run-groups:
+    base:
+      args: |
+        [
+          {
+            "nlist": 1024,
+            "total_bits": 7,
+            "faster_config": true
+          }
+        ]
+      query-args: |
+        [
+          {"nprobe": 1},
+          {"nprobe": 2},
+          {"nprobe": 4},
+          {"nprobe": 8},
+          {"nprobe": 16},
+          {"nprobe": 32},
+          {"nprobe": 64}
+        ]
+
+    high-recall:
+      args: |
+        [
+          {
+            "nlist": 4096,
+            "total_bits": 7,
+            "faster_config": true
+          }
+        ]
+      query-args: |
+        [
+          {"nprobe": 32},
+          {"nprobe": 64},
+          {"nprobe": 128},
+          {"nprobe": 256},
+          {"nprobe": 512}
+        ]
+
+    low-latency:
+      args: |
+        [
+          {
+            "nlist": 256,
+            "total_bits": 5,
+            "faster_config": true
+          }
+        ]
+      query-args: |
+        [
+          {"nprobe": 1},
+          {"nprobe": 2},
+          {"nprobe": 4},
+          {"nprobe": 8},
+          {"nprobe": 16}
+        ]
+
+    memory-efficient:
+      args: |
+        [
+          {
+            "nlist": 2048,
+            "total_bits": 3,
+            "faster_config": true
+          }
+        ]
+      query-args: |
+        [
+          {"nprobe": 4},
+          {"nprobe": 8},
+          {"nprobe": 16},
+          {"nprobe": 32},
+          {"nprobe": 64}
+        ]
+
 rabitq-mstg:
   docker-tag: ann-benchmarks-rabitq-mstg
   module: ann_benchmarks.algorithms.rabitq_mstg
@@ -8,11 +88,18 @@ rabitq-mstg:
       args: |
         [
           {
-            "max_posting_size": 50,
-            "branching_factor": 10,
+            "max_posting_size": 256,
+            "branching_factor": 5,
+            "balance_weight": 1.0,
+            "closure_epsilon": 0.15,
+            "max_replicas": 8,
             "rabitq_bits": 7,
-            "faster_config": True,
-            "centroid_precision": "bf16"
+            "faster_config": true,
+            "hnsw_m": 32,
+            "hnsw_ef_construction": 200,
+            "centroid_precision": "bf16",
+            "default_ef_search": 150,
+            "pruning_epsilon": 0.6
           }
         ]
       query-args: |
@@ -21,19 +108,26 @@ rabitq-mstg:
           {"ef_search": 100, "pruning_epsilon": 0.5},
           {"ef_search": 150, "pruning_epsilon": 0.6},
           {"ef_search": 200, "pruning_epsilon": 0.7},
-          {"ef_search": 300, "pruning_epsilon": 0.8}
+          {"ef_search": 300, "pruning_epsilon": 0.8},
+          {"ef_search": 500, "pruning_epsilon": 1.0}
         ]
 
     high-recall:
       args: |
         [
           {
-            "max_posting_size": 30,
-            "branching_factor": 12,
+            "max_posting_size": 128,
+            "branching_factor": 8,
+            "balance_weight": 1.0,
+            "closure_epsilon": 0.20,
+            "max_replicas": 10,
             "rabitq_bits": 7,
-            "faster_config": True,
+            "faster_config": true,
+            "hnsw_m": 48,
+            "hnsw_ef_construction": 400,
             "centroid_precision": "bf16",
-            "hnsw_ef_construction": 400
+            "default_ef_search": 300,
+            "pruning_epsilon": 0.8
           }
         ]
       query-args: |
@@ -41,18 +135,26 @@ rabitq-mstg:
           {"ef_search": 200, "pruning_epsilon": 0.7},
           {"ef_search": 300, "pruning_epsilon": 0.8},
           {"ef_search": 400, "pruning_epsilon": 0.9},
-          {"ef_search": 500, "pruning_epsilon": 1.0}
+          {"ef_search": 500, "pruning_epsilon": 1.0},
+          {"ef_search": 700, "pruning_epsilon": 1.2}
         ]
 
     low-latency:
       args: |
         [
           {
-            "max_posting_size": 80,
-            "branching_factor": 8,
+            "max_posting_size": 512,
+            "branching_factor": 4,
+            "balance_weight": 1.0,
+            "closure_epsilon": 0.10,
+            "max_replicas": 6,
             "rabitq_bits": 5,
-            "faster_config": True,
-            "centroid_precision": "int8"
+            "faster_config": true,
+            "hnsw_m": 24,
+            "hnsw_ef_construction": 100,
+            "centroid_precision": "bf16",
+            "default_ef_search": 50,
+            "pruning_epsilon": 0.4
           }
         ]
       query-args: |
@@ -60,22 +162,31 @@ rabitq-mstg:
           {"ef_search": 20, "pruning_epsilon": 0.2},
           {"ef_search": 30, "pruning_epsilon": 0.3},
           {"ef_search": 50, "pruning_epsilon": 0.4},
-          {"ef_search": 75, "pruning_epsilon": 0.5}
+          {"ef_search": 75, "pruning_epsilon": 0.5},
+          {"ef_search": 100, "pruning_epsilon": 0.6}
         ]
 
     memory-efficient:
       args: |
         [
           {
-            "max_posting_size": 100,
-            "branching_factor": 6,
+            "max_posting_size": 1024,
+            "branching_factor": 3,
+            "balance_weight": 1.0,
+            "closure_epsilon": 0.08,
+            "max_replicas": 4,
             "rabitq_bits": 3,
-            "faster_config": True,
-            "centroid_precision": "int8"
+            "faster_config": true,
+            "hnsw_m": 16,
+            "hnsw_ef_construction": 100,
+            "centroid_precision": "int8",
+            "default_ef_search": 100,
+            "pruning_epsilon": 0.5
           }
         ]
       query-args: |
         [
+          {"ef_search": 50, "pruning_epsilon": 0.4},
           {"ef_search": 100, "pruning_epsilon": 0.5},
           {"ef_search": 150, "pruning_epsilon": 0.6},
           {"ef_search": 200, "pruning_epsilon": 0.7}

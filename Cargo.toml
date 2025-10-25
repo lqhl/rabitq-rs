@@ -50,6 +50,7 @@ path = "src/bin/ivf_rabitq.rs"
 [features]
 default = []
 python = ["pyo3", "numpy"]
+avx512 = []  # Enable native AVX-512 SIMD (requires nightly Rust)
 
 [package.metadata.docs.rs]
 all-features = true

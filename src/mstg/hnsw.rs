@@ -12,13 +12,13 @@ use serde::{Deserialize, Serialize};
 pub struct CentroidIndex {
     #[allow(dead_code)]
     precision: ScalarPrecision,
-    centroid_ids: Vec<u32>,
+    pub(crate) centroid_ids: Vec<u32>,
     centroids: CentroidData,
     /// Store the centroids in a Box for stable addresses
     centroid_vecs: Box<[Vec<f32>]>,
     /// Cached HNSW index (built lazily on first search)
     /// Safety: The HNSW borrows from centroid_vecs, which is never moved after construction
-    hnsw_cache: RwLock<Option<Hnsw<'static, f32, DistL2>>>,
+    pub(crate) hnsw_cache: RwLock<Option<Hnsw<'static, f32, DistL2>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +64,7 @@ impl CentroidIndex {
     }
 
     /// Build and cache the HNSW index
-    fn ensure_hnsw_built(&self) {
+    pub(crate) fn ensure_hnsw_built(&self) {
         // Check if already built (fast path with read lock)
         {
             let cache = self.hnsw_cache.read();
@@ -84,7 +84,9 @@ impl CentroidIndex {
         // Parameters for HNSW construction
         let max_nb_connection = 32;
         let ef_construction = 200;
-        let max_layer = 16.min((nb_elements as f32).ln().floor() as usize);
+        // Use fixed max_layer to avoid hnsw_rs serialization issues
+        // The library expects max_layer to match NB_MAX_LAYER during serialization
+        let max_layer = 16;
 
         let mut hnsw = Hnsw::<f32, DistL2>::new(
             max_nb_connection,
