@@ -6,7 +6,9 @@
 [![License](https://img.shields.io/crates/l/rabitq-rs.svg)](LICENSE)
 [![Rust Version](https://img.shields.io/badge/rust-1.70%2B-blue.svg)](https://www.rust-lang.org)
 
-Pure Rust implementation of the RaBitQ vector quantization algorithm with IVF (Inverted File) search capabilities.
+Pure Rust implementation of advanced vector quantization and search algorithms:
+- **RaBitQ quantization** with IVF (Inverted File) search - Production ready
+- **MSTG (Multi-Scale Tree Graph)** index - ⚠️ Experimental (v0.5.0)
 
 **Up to 32× memory compression** with significantly higher accuracy than traditional Product Quantization (PQ) or Scalar Quantization (SQ).
 
@@ -30,16 +32,49 @@ This library provides a **feature-complete** RaBitQ + IVF search engine with all
 - ✅ **Memory Safe**: No segfaults, no unsafe code in dependencies
 - ✅ **Complete IVF Pipeline**: Training (built-in k-means or FAISS-compatible), search, persistence
 
+## MSTG: Multi-Scale Tree Graph Index (⚠️ Experimental)
+
+**New in v0.5.0**: MSTG is an experimental hybrid index combining hierarchical clustering with graph navigation.
+
+> **⚠️ Experimental Status**: MSTG is under active development and lacks comprehensive testing and tuning. For production workloads, we recommend using the battle-tested **IVF+RaBitQ** index. MSTG is provided for research and experimentation purposes.
+
+### Key Features
+
+- **Hierarchical Balanced Clustering**: Adaptive multi-scale clustering with configurable branching factor
+- **Closure Assignment**: Vectors can belong to multiple clusters (RNG rule) for better recall
+- **HNSW Graph Navigation**: Fast approximate nearest centroid search
+- **Flexible Precision**: FP32, BF16, FP16, or INT8 for centroids
+- **Dynamic Pruning**: Adaptive cluster selection based on query-centroid distances
+- **Python Bindings**: Seamless integration with NumPy and ann-benchmarks
+
+### When to Use MSTG vs IVF+RaBitQ
+
+| Feature | IVF+RaBitQ | MSTG (Experimental) |
+|---------|------------|---------------------|
+| **Maturity** | ✅ Production Ready | ⚠️ Experimental |
+| **Testing** | ✅ Comprehensive | ⚠️ Limited |
+| **Best For** | All use cases (10K-10M+) | Research & experimentation |
+| **Recall** | 85-95% (well-tuned) | 90-98% (theoretical) |
+| **Build Time** | Fast (k-means) | Moderate (hierarchical) |
+| **Query Speed** | Fast | Very Fast (HNSW navigation) |
+| **Memory** | Low | Low-Medium (configurable) |
+| **Stability** | ✅ Stable | ⚠️ API may change |
+| **Documentation** | ✅ Complete | 🚧 In progress |
+
+**Recommendation**: **Use IVF+RaBitQ for production workloads**. It's well-tested, documented, and optimized. Consider MSTG only if you're researching advanced indexing techniques or willing to help with testing and tuning.
+
 ## Quick Start
 
 Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rabitq-rs = "0.3"
+rabitq-rs = "0.5"
 ```
 
-Build an index and search in ~10 lines:
+### IVF+RaBitQ Index (Recommended for Production)
+
+Build an IVF+RaBitQ index and search in ~10 lines:
 
 ```rust
 use rabitq_rs::{IvfRabitqIndex, SearchParams, Metric, RotatorType};
@@ -74,9 +109,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### MSTG Index (⚠️ Experimental - For Research Only)
+
+Build an MSTG index and search in ~10 lines:
+
+```rust
+use rabitq_rs::mstg::{MstgIndex, MstgConfig, SearchParams};
+use rand::prelude::*;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rng = StdRng::seed_from_u64(42);
+    let dim = 128;
+
+    // Generate 10,000 random vectors
+    let dataset: Vec<Vec<f32>> = (0..10_000)
+        .map(|_| (0..dim).map(|_| rng.gen::<f32>()).collect())
+        .collect();
+
+    // Build index with default configuration
+    let index = MstgIndex::build(&dataset, MstgConfig::default())?;
+
+    // Search: balanced mode with top 10 results
+    let params = SearchParams::balanced(10);
+    let results = index.search(&dataset[0], &params);
+
+    println!("Top neighbor ID: {}, distance: {:.6}", results[0].vector_id, results[0].distance);
+    Ok(())
+}
+```
+
+> **⚠️ Note**: MSTG is experimental and not recommended for production use. Use IVF+RaBitQ for stable, well-tested performance.
+
 ## Usage
 
-### Training with Built-in K-Means
+### IVF+RaBitQ Index
+
+#### Training with Built-in K-Means
 
 ```rust
 use rabitq_rs::{IvfRabitqIndex, Metric, RotatorType};
@@ -92,7 +160,7 @@ let index = IvfRabitqIndex::train(
 )?;
 ```
 
-### Training with Pre-computed Clusters (FAISS-Compatible)
+#### Training with Pre-computed Clusters (FAISS-Compatible)
 
 If you already have centroids and cluster assignments from FAISS or another tool:
 
@@ -111,7 +179,7 @@ let index = IvfRabitqIndex::train_with_clusters(
 )?;
 ```
 
-### Using Faster Config for Large Datasets
+#### Using Faster Config for Large Datasets
 
 For datasets >100K vectors, enable `faster_config` to accelerate training by **100-500×** with minimal accuracy loss (<1%):
 
@@ -127,7 +195,7 @@ let index = IvfRabitqIndex::train(
 )?;
 ```
 
-### Searching
+#### Searching
 
 ```rust
 use rabitq_rs::SearchParams;
@@ -149,7 +217,7 @@ for result in results.iter().take(10) {
 - `top_k`: Number of neighbors to return
 - `total_bits`: More bits = higher accuracy, larger index (typical: 3-7)
 
-### Saving and Loading
+#### Saving and Loading
 
 ```rust
 // Save index to disk (with CRC32 checksum)
@@ -158,6 +226,70 @@ index.save("my_index.bin")?;
 // Load index from disk
 let loaded_index = IvfRabitqIndex::load("my_index.bin")?;
 ```
+
+### MSTG Index (⚠️ Experimental)
+
+#### Building an MSTG Index
+
+```rust
+use rabitq_rs::mstg::{MstgIndex, MstgConfig, ScalarPrecision};
+use rabitq_rs::Metric;
+
+let mut config = MstgConfig::default();
+
+// Configure clustering
+config.max_posting_size = 5000;     // Max vectors per cluster
+config.branching_factor = 10;       // Hierarchical branching
+config.balance_weight = 1.0;        // Balance vs purity trade-off
+
+// Configure closure assignment (multi-assignment)
+config.closure_epsilon = 0.15;      // Distance threshold
+config.max_replicas = 8;            // Max assignments per vector
+
+// Configure quantization
+config.rabitq_bits = 7;             // 3-8 bits (7 recommended)
+config.faster_config = true;        // Fast mode
+config.metric = Metric::L2;         // or Metric::InnerProduct
+
+// Configure HNSW graph
+config.hnsw_m = 32;                 // Connectivity
+config.hnsw_ef_construction = 200;  // Build quality
+config.centroid_precision = ScalarPrecision::BF16; // FP32/BF16/FP16/INT8
+
+let index = MstgIndex::build(&vectors, config)?;
+```
+
+#### Searching
+
+```rust
+use rabitq_rs::mstg::SearchParams;
+
+// Option 1: Pre-defined modes
+let params = SearchParams::high_recall(100);  // 95%+ recall
+let params = SearchParams::balanced(100);     // ~90% recall (default)
+let params = SearchParams::low_latency(100);  // ~80% recall, fastest
+
+// Option 2: Custom parameters
+let params = SearchParams::new(
+    150,   // ef_search: candidates to explore
+    0.6,   // pruning_epsilon: dynamic pruning threshold
+    100,   // top_k: number of results
+);
+
+let results = index.search(&query_vector, &params);
+
+for result in results.iter().take(10) {
+    println!("ID: {}, Distance: {:.6}", result.vector_id, result.distance);
+}
+```
+
+**Parameter Tuning**:
+- `ef_search`: Higher = better recall, slower (typical: 50-300)
+- `pruning_epsilon`: Higher = more clusters searched (typical: 0.4-0.8)
+- `max_posting_size`: Smaller = more clusters, better balance (typical: 3000-10000)
+- `rabitq_bits`: More bits = higher accuracy (typical: 5-7)
+
+> **⚠️ Reminder**: MSTG is experimental. For production use, refer to the IVF+RaBitQ documentation above.
 
 ## CLI Tool: Benchmark on GIST-1M
 
