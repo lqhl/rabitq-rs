@@ -25,15 +25,19 @@ class RabitqMstg:
         self.metric = metric
         self.index_params = index_params
         self.index = None
-        self.name = f"RaBitQ-MSTG({self._format_params(index_params)})"
+        self.name = f"MSTG-{self._format_params(index_params)}"
 
     def _format_params(self, params):
-        """Format parameters for display in benchmark results."""
-        formatted = []
-        for key in ['max_posting_size', 'rabitq_bits', 'centroid_precision']:
-            if key in params:
-                formatted.append(f"{key}={params[key]}")
-        return ",".join(formatted)
+        """Format parameters for display in benchmark results (keep short to avoid long filenames)."""
+        # Use abbreviated keys to keep filenames short
+        parts = []
+        if 'max_posting_size' in params:
+            parts.append(f"P{params['max_posting_size']}")
+        if 'rabitq_bits' in params:
+            parts.append(f"B{params['rabitq_bits']}")
+        if 'hnsw_m' in params:
+            parts.append(f"M{params['hnsw_m']}")
+        return "-".join(parts) if parts else "default"
 
     def fit(self, X):
         """
@@ -108,8 +112,16 @@ class RabitqMstg:
         # Query returns array of shape (k, 2) with [id, distance]
         results = self.index.query(v, n)
 
-        # Return only IDs (first column)
-        return results[:, 0].astype(np.int32)
+        # Return only IDs (first column), ensuring uniqueness
+        ids = results[:, 0].astype(np.int32)
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_ids = []
+        for id in ids:
+            if id not in seen:
+                seen.add(id)
+                unique_ids.append(id)
+        return np.array(unique_ids, dtype=np.int32)
 
     def batch_query(self, X, n):
         """
@@ -137,8 +149,19 @@ class RabitqMstg:
         # Batch query returns list of arrays
         results = self.index.batch_query(X, n)
 
-        # Convert to list of ID arrays
-        return [r[:, 0].astype(np.int32) for r in results]
+        # Convert to list of ID arrays, ensuring uniqueness for each result
+        unique_results = []
+        for r in results:
+            ids = r[:, 0].astype(np.int32)
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_ids = []
+            for id in ids:
+                if id not in seen:
+                    seen.add(id)
+                    unique_ids.append(id)
+            unique_results.append(np.array(unique_ids, dtype=np.int32))
+        return unique_results
 
     def get_memory_usage(self):
         """
@@ -150,6 +173,21 @@ class RabitqMstg:
         if self.index is None:
             return 0
         return self.index.get_memory_usage()
+
+    def done(self):
+        """
+        Cleanup method called by ann-benchmarks after benchmarking.
+        """
+        pass
+
+    def get_additional(self):
+        """
+        Get additional metrics/information about the last query.
+
+        Returns:
+            Dictionary with additional information (empty by default)
+        """
+        return {}
 
     def __str__(self):
         return self.name

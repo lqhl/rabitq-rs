@@ -43,10 +43,6 @@ name = "rabitq_rs"
 path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 
-[[bin]]
-name = "ivf_rabitq"
-path = "src/bin/ivf_rabitq.rs"
-
 [features]
 default = []
 python = ["pyo3", "numpy"]

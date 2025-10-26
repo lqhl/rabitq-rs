@@ -27,7 +27,7 @@ impl PyMstgIndex {
     #[pyo3(signature = (
         dimension,
         metric="euclidean",
-        max_posting_size=5000,
+        max_posting_size=16,
         branching_factor=10,
         balance_weight=1.0,
         closure_epsilon=0.15,
@@ -35,7 +35,7 @@ impl PyMstgIndex {
         rabitq_bits=7,
         faster_config=true,
         hnsw_m=32,
-        hnsw_ef_construction=200,
+        hnsw_ef_construction=400,
         centroid_precision="bf16",
         default_ef_search=150,
         pruning_epsilon=0.6
@@ -320,9 +320,11 @@ impl PyMstgIndex {
             0
         };
 
+        let config = index.config.clone();
+
         Ok(Self {
-            index: Some(index.clone()),
-            config: index.config.clone(),
+            index: Some(index),
+            config,
             dimension,
         })
     }

@@ -1,0 +1,39 @@
+float:
+  any:
+  - base_args: ['@metric']
+    constructor: RabitqMstg
+    disabled: false
+    docker_tag: ann-benchmarks-rabitq-mstg
+    module: ann_benchmarks.algorithms.rabitq-mstg
+    name: rabitq-mstg
+    run_groups:
+      base:
+        arg_groups:
+        - max_posting_size: 16
+          rabitq_bits: 7
+          hnsw_m: 32
+        query_args:
+        - - ef_search: 100
+          - ef_search: 200
+          - ef_search: 400
+          - ef_search: 800
+      high-recall:
+        arg_groups:
+        - max_posting_size: 8
+          rabitq_bits: 7
+          hnsw_m: 48
+        query_args:
+        - - ef_search: 100
+          - ef_search: 200
+          - ef_search: 400
+          - ef_search: 800
+      low-latency:
+        arg_groups:
+        - max_posting_size: 32
+          rabitq_bits: 5
+          hnsw_m: 24
+        query_args:
+        - - ef_search: 100
+          - ef_search: 200
+          - ef_search: 400
+          - ef_search: 800

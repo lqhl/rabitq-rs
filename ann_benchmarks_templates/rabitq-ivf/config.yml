@@ -1,0 +1,33 @@
+float:
+  any:
+  - base_args: ['@metric']
+    constructor: RabitqIvf
+    disabled: false
+    docker_tag: ann-benchmarks-rabitq-ivf
+    module: ann_benchmarks.algorithms.rabitq-ivf
+    name: rabitq-ivf
+    run_groups:
+      nlist_32:
+        arg_groups: [{"nlist": 32, "total_bits": 7, "faster_config": true}]
+        query_args: [[{"nprobe": 1}, {"nprobe": 5}, {"nprobe": 10}]]
+      nlist_64:
+        arg_groups: [{"nlist": 64, "total_bits": 7, "faster_config": true}]
+        query_args: [[{"nprobe": 1}, {"nprobe": 5}, {"nprobe": 10}]]
+      nlist_128:
+        arg_groups: [{"nlist": 128, "total_bits": 7, "faster_config": true}]
+        query_args: [[{"nprobe": 1}, {"nprobe": 5}, {"nprobe": 10}, {"nprobe": 50}]]
+      nlist_256:
+        arg_groups: [{"nlist": 256, "total_bits": 7, "faster_config": true}]
+        query_args: [[{"nprobe": 1}, {"nprobe": 5}, {"nprobe": 10}, {"nprobe": 50}, {"nprobe": 100}]]
+      nlist_512:
+        arg_groups: [{"nlist": 512, "total_bits": 7, "faster_config": true}]
+        query_args: [[{"nprobe": 1}, {"nprobe": 5}, {"nprobe": 10}, {"nprobe": 50}, {"nprobe": 100}, {"nprobe": 500}]]
+      nlist_1024:
+        arg_groups: [{"nlist": 1024, "total_bits": 7, "faster_config": true}]
+        query_args: [[{"nprobe": 1}, {"nprobe": 5}, {"nprobe": 10}, {"nprobe": 50}, {"nprobe": 100}, {"nprobe": 500}]]
+      nlist_2048:
+        arg_groups: [{"nlist": 2048, "total_bits": 7, "faster_config": true}]
+        query_args: [[{"nprobe": 1}, {"nprobe": 5}, {"nprobe": 10}, {"nprobe": 50}, {"nprobe": 100}, {"nprobe": 500}]]
+      nlist_4096:
+        arg_groups: [{"nlist": 4096, "total_bits": 7, "faster_config": true}]
+        query_args: [[{"nprobe": 1}, {"nprobe": 5}, {"nprobe": 10}, {"nprobe": 50}, {"nprobe": 100}, {"nprobe": 500}, {"nprobe": 1000}]]
