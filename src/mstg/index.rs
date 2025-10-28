@@ -199,10 +199,7 @@ impl MstgIndex {
         queries: &[Vec<f32>],
         params: &SearchParams,
     ) -> Vec<Vec<SearchResult>> {
-        queries
-            .par_iter()
-            .map(|q| self.search(q, params))
-            .collect()
+        queries.par_iter().map(|q| self.search(q, params)).collect()
     }
 
     /// Apply dynamic pruning to centroid candidates

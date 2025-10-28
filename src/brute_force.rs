@@ -507,6 +507,8 @@ impl BruteForceRabitqIndex {
                 code,
                 binary_code_packed,
                 ex_code_packed,
+                binary_code_unpacked: binary_code, // Cache unpacked version
+                ex_code_unpacked: ex_code,         // Cache unpacked version
                 ex_bits: ex_bits as u8,
                 dim: padded_dim,
                 delta,

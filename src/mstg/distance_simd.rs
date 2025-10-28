@@ -53,7 +53,6 @@ unsafe fn estimate_distance_avx2(
     quantized: &QuantizedVector,
     metric: Metric,
 ) -> f32 {
-
     // Step 1: Compute g_add (query-to-centroid distance component)
     let g_add = match metric {
         Metric::L2 => l2_distance_sqr_avx2(ctx.query, centroid),

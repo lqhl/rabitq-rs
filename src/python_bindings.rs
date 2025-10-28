@@ -301,9 +301,9 @@ impl PyMstgIndex {
             .as_ref()
             .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Index not built yet."))?;
 
-        index
-            .save_to_path(path)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Save failed: {}", e)))?;
+        index.save_to_path(path).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Save failed: {}", e))
+        })?;
 
         Ok(())
     }
@@ -311,8 +311,9 @@ impl PyMstgIndex {
     /// Load index from file
     #[staticmethod]
     fn load(path: &str) -> PyResult<Self> {
-        let index = MstgIndex::load_from_path(path)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Load failed: {}", e)))?;
+        let index = MstgIndex::load_from_path(path).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Load failed: {}", e))
+        })?;
 
         let dimension = if !index.posting_lists.is_empty() {
             index.posting_lists[0].centroid.len()

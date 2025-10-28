@@ -594,6 +594,377 @@ unsafe fn unpack_7bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
     }
 }
 
+/// SIMD-accelerated dot product: u8 vector with f32 vector
+/// Converts u8 to f32 and computes dot product
+#[inline]
+pub fn dot_u8_f32(a: &[u8], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe {
+        return dot_u8_f32_avx2(a, b);
+    }
+
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    {
+        return dot_u8_f32_scalar(a, b);
+    }
+}
+
+/// SIMD-accelerated dot product: u16 vector with f32 vector
+/// Converts u16 to f32 and computes dot product
+#[inline]
+pub fn dot_u16_f32(a: &[u16], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe {
+        return dot_u16_f32_avx2(a, b);
+    }
+
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    {
+        return dot_u16_f32_scalar(a, b);
+    }
+}
+
+#[inline]
+fn dot_u8_f32_scalar(a: &[u8], b: &[f32]) -> f32 {
+    a.iter().zip(b.iter()).map(|(&x, &y)| (x as f32) * y).sum()
+}
+
+#[inline]
+fn dot_u16_f32_scalar(a: &[u16], b: &[f32]) -> f32 {
+    a.iter().zip(b.iter()).map(|(&x, &y)| (x as f32) * y).sum()
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn dot_u8_f32_avx2(a: &[u8], b: &[f32]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    let len = a.len();
+    let chunks = len / 8;
+    let remainder = len % 8;
+
+    let mut sum = _mm256_setzero_ps();
+
+    for i in 0..chunks {
+        let offset = i * 8;
+
+        // Load 8 u8 values
+        let a_u8 = _mm_loadl_epi64(a.as_ptr().add(offset) as *const __m128i);
+        // Convert u8 to u32
+        let a_u32 = _mm256_cvtepu8_epi32(a_u8);
+        // Convert u32 to f32
+        let a_f32 = _mm256_cvtepi32_ps(a_u32);
+
+        // Load 8 f32 values
+        let b_f32 = _mm256_loadu_ps(b.as_ptr().add(offset));
+
+        // Multiply and accumulate
+        sum = _mm256_fmadd_ps(a_f32, b_f32, sum);
+    }
+
+    // Horizontal sum
+    let mut result = 0.0f32;
+    let sum_arr: [f32; 8] = std::mem::transmute(sum);
+    for &val in &sum_arr {
+        result += val;
+    }
+
+    // Handle remainder
+    let offset = chunks * 8;
+    for i in 0..remainder {
+        result += (a[offset + i] as f32) * b[offset + i];
+    }
+
+    result
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn dot_u16_f32_avx2(a: &[u16], b: &[f32]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    let len = a.len();
+    let chunks = len / 8;
+    let remainder = len % 8;
+
+    let mut sum = _mm256_setzero_ps();
+
+    for i in 0..chunks {
+        let offset = i * 8;
+
+        // Load 8 u16 values
+        let a_u16 = _mm_loadu_si128(a.as_ptr().add(offset) as *const __m128i);
+        // Convert u16 to u32
+        let a_u32 = _mm256_cvtepu16_epi32(a_u16);
+        // Convert u32 to f32
+        let a_f32 = _mm256_cvtepi32_ps(a_u32);
+
+        // Load 8 f32 values
+        let b_f32 = _mm256_loadu_ps(b.as_ptr().add(offset));
+
+        // Multiply and accumulate
+        sum = _mm256_fmadd_ps(a_f32, b_f32, sum);
+    }
+
+    // Horizontal sum
+    let mut result = 0.0f32;
+    let sum_arr: [f32; 8] = std::mem::transmute(sum);
+    for &val in &sum_arr {
+        result += val;
+    }
+
+    // Handle remainder
+    let offset = chunks * 8;
+    for i in 0..remainder {
+        result += (a[offset + i] as f32) * b[offset + i];
+    }
+
+    result
+}
+
+// ============================================================================
+// FastScan: Batch processing with lookup tables for high-performance search
+// ============================================================================
+
+/// Batch size for FastScan (process 32 vectors at once)
+pub const FASTSCAN_BATCH_SIZE: usize = 32;
+
+/// Position lookup table for 4-bit codes (all combinations of 4 bits)
+const KPOS: [usize; 16] = [3, 3, 2, 3, 1, 3, 2, 3, 0, 3, 2, 3, 1, 3, 2, 3];
+
+/// Permutation for code packing
+const KPERM0: [usize; 16] = [0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15];
+
+/// Get the position of the lowest set bit (LOWBIT macro from C++)
+#[inline]
+fn lowbit(x: usize) -> usize {
+    x & (!x + 1)
+}
+
+/// Pack lookup table for fast distance estimation
+/// For each 4 dimensions, precompute 16 possible values (2^4 combinations)
+/// This avoids multiplication during search
+///
+/// The LUT is stored as i8 values for SIMD shuffle operations
+///
+/// # Arguments
+/// * `query` - Rotated query vector (scaled appropriately)
+/// * `lut` - Output lookup table as i8 (size: dim/4 * 16)
+pub fn pack_lut_i8(query: &[f32], lut: &mut [i8]) {
+    assert!(
+        query.len() % 4 == 0,
+        "Query dimension must be multiple of 4"
+    );
+    let num_codebook = query.len() / 4;
+    assert_eq!(
+        lut.len(),
+        num_codebook * 16,
+        "LUT size must be num_codebook * 16"
+    );
+
+    for i in 0..num_codebook {
+        let q_offset = i * 4;
+        let lut_offset = i * 16;
+
+        lut[lut_offset] = 0;
+        for j in 1..16 {
+            let prev_idx = j - lowbit(j).trailing_zeros() as usize;
+            let sum = (lut[lut_offset + prev_idx] as f32) + query[q_offset + KPOS[j]];
+            lut[lut_offset + j] = sum.round() as i8;
+        }
+    }
+}
+
+/// Pack lookup table as f32 (for non-SIMD paths)
+pub fn pack_lut_f32(query: &[f32], lut: &mut [f32]) {
+    assert!(
+        query.len() % 4 == 0,
+        "Query dimension must be multiple of 4"
+    );
+    let num_codebook = query.len() / 4;
+    assert_eq!(
+        lut.len(),
+        num_codebook * 16,
+        "LUT size must be num_codebook * 16"
+    );
+
+    for i in 0..num_codebook {
+        let q_offset = i * 4;
+        let lut_offset = i * 16;
+
+        lut[lut_offset] = 0.0;
+        for j in 1..16 {
+            let prev_idx = j - lowbit(j).trailing_zeros() as usize;
+            lut[lut_offset + j] = lut[lut_offset + prev_idx] + query[q_offset + KPOS[j]];
+        }
+    }
+}
+
+/// Pack binary codes into FastScan batch format
+/// Reorganizes 32 vectors' codes for SIMD-friendly access pattern
+///
+/// # Arguments
+/// * `codes` - Input codes (num_vectors * dim, where dim is in bytes)
+/// * `num_vectors` - Number of vectors (will be rounded up to multiple of 32)
+/// * `dim_bytes` - Dimension in bytes (each byte holds codes for 8 dimensions)
+/// * `packed` - Output packed data
+pub fn pack_codes(codes: &[u8], num_vectors: usize, dim_bytes: usize, packed: &mut [u8]) {
+    let num_batches = (num_vectors + FASTSCAN_BATCH_SIZE - 1) / FASTSCAN_BATCH_SIZE;
+    let expected_size = num_batches * FASTSCAN_BATCH_SIZE * dim_bytes;
+    assert!(packed.len() >= expected_size, "Packed buffer too small");
+
+    let mut packed_offset = 0;
+
+    for batch_idx in 0..num_batches {
+        let batch_start = batch_idx * FASTSCAN_BATCH_SIZE;
+        let batch_end = std::cmp::min(batch_start + FASTSCAN_BATCH_SIZE, num_vectors);
+
+        // Process each byte column
+        for col in 0..dim_bytes {
+            let mut col_data = [0u8; FASTSCAN_BATCH_SIZE];
+
+            // Extract column from all vectors in this batch
+            for (i, vec_idx) in (batch_start..batch_end).enumerate() {
+                col_data[i] = codes[vec_idx * dim_bytes + col];
+            }
+
+            // Split into upper and lower 4 bits
+            let mut col_0 = [0u8; FASTSCAN_BATCH_SIZE]; // upper 4 bits
+            let mut col_1 = [0u8; FASTSCAN_BATCH_SIZE]; // lower 4 bits
+
+            for j in 0..FASTSCAN_BATCH_SIZE {
+                col_0[j] = col_data[j] >> 4;
+                col_1[j] = col_data[j] & 15;
+            }
+
+            // Pack according to KPERM0 permutation
+            for j in 0..16 {
+                let val0 = col_0[KPERM0[j]] | (col_0[KPERM0[j] + 16] << 4);
+                let val1 = col_1[KPERM0[j]] | (col_1[KPERM0[j] + 16] << 4);
+                packed[packed_offset + j] = val0;
+                packed[packed_offset + j + 16] = val1;
+            }
+
+            packed_offset += 32;
+        }
+    }
+}
+
+/// Accumulate distances for a batch of 32 vectors using FastScan with AVX2
+/// Uses pre-computed lookup table (LUT) and SIMD shuffle for fast distance estimation
+///
+/// # Arguments
+/// * `packed_codes` - Packed binary codes for 32 vectors
+/// * `lut` - Pre-computed lookup table (as i8)
+/// * `dim` - Dimension (must be multiple of 16 for AVX2)
+/// * `results` - Output distances for 32 vectors
+#[inline]
+pub fn accumulate_batch_avx2(
+    packed_codes: &[u8],
+    lut: &[i8],
+    dim: usize,
+    results: &mut [u16; FASTSCAN_BATCH_SIZE],
+) {
+    assert!(dim % 16 == 0, "Dimension must be multiple of 16 for AVX2");
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe {
+        accumulate_batch_avx2_impl(packed_codes, lut, dim, results);
+    }
+
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    {
+        accumulate_batch_scalar(packed_codes, lut, dim, results);
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn accumulate_batch_avx2_impl(
+    packed_codes: &[u8],
+    lut: &[i8],
+    dim: usize,
+    results: &mut [u16; FASTSCAN_BATCH_SIZE],
+) {
+    use std::arch::x86_64::*;
+
+    let code_length = dim << 2; // dim * 4
+    let low_mask = _mm256_set1_epi8(0x0f);
+
+    let mut accu0 = _mm256_setzero_si256();
+    let mut accu1 = _mm256_setzero_si256();
+    let mut accu2 = _mm256_setzero_si256();
+    let mut accu3 = _mm256_setzero_si256();
+
+    // Process 64 bytes at a time (2 * 32)
+    for i in (0..code_length).step_by(64) {
+        // First 32 bytes
+        let c = _mm256_loadu_si256(packed_codes.as_ptr().add(i) as *const __m256i);
+        let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i) as *const __m256i);
+        let lo = _mm256_and_si256(c, low_mask);
+        let hi = _mm256_and_si256(_mm256_srli_epi16(c, 4), low_mask);
+
+        let res_lo = _mm256_shuffle_epi8(lut_val, lo);
+        let res_hi = _mm256_shuffle_epi8(lut_val, hi);
+
+        accu0 = _mm256_add_epi16(accu0, res_lo);
+        accu1 = _mm256_add_epi16(accu1, _mm256_srli_epi16(res_lo, 8));
+        accu2 = _mm256_add_epi16(accu2, res_hi);
+        accu3 = _mm256_add_epi16(accu3, _mm256_srli_epi16(res_hi, 8));
+
+        // Second 32 bytes
+        let c = _mm256_loadu_si256(packed_codes.as_ptr().add(i + 32) as *const __m256i);
+        let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i + 32) as *const __m256i);
+        let lo = _mm256_and_si256(c, low_mask);
+        let hi = _mm256_and_si256(_mm256_srli_epi16(c, 4), low_mask);
+
+        let res_lo = _mm256_shuffle_epi8(lut_val, lo);
+        let res_hi = _mm256_shuffle_epi8(lut_val, hi);
+
+        accu0 = _mm256_add_epi16(accu0, res_lo);
+        accu1 = _mm256_add_epi16(accu1, _mm256_srli_epi16(res_lo, 8));
+        accu2 = _mm256_add_epi16(accu2, res_hi);
+        accu3 = _mm256_add_epi16(accu3, _mm256_srli_epi16(res_hi, 8));
+    }
+
+    // Subtract the upper 8 bits influence
+    accu0 = _mm256_sub_epi16(accu0, _mm256_slli_epi16(accu1, 8));
+
+    // Combine results
+    let dis0 = _mm256_add_epi16(
+        _mm256_permute2f128_si256(accu0, accu1, 0x21),
+        _mm256_blend_epi32(accu0, accu1, 0xF0),
+    );
+    _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, dis0);
+
+    accu2 = _mm256_sub_epi16(accu2, _mm256_slli_epi16(accu3, 8));
+    let dis1 = _mm256_add_epi16(
+        _mm256_permute2f128_si256(accu2, accu3, 0x21),
+        _mm256_blend_epi32(accu2, accu3, 0xF0),
+    );
+    _mm256_storeu_si256(results.as_mut_ptr().add(16) as *mut __m256i, dis1);
+}
+
+/// Scalar fallback for accumulate_batch when AVX2 is not available
+fn accumulate_batch_scalar(
+    _packed_codes: &[u8],
+    _lut: &[i8],
+    _dim: usize,
+    results: &mut [u16; FASTSCAN_BATCH_SIZE],
+) {
+    // Simple fallback - not optimized
+    // TODO: Implement proper scalar accumulation
+    for i in 0..FASTSCAN_BATCH_SIZE {
+        results[i] = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

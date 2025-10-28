@@ -17,7 +17,11 @@ const MAGIC_BYTES: &[u8; 4] = b"MSTG";
 const PERSISTENCE_VERSION: u32 = 1;
 
 /// Write u32 with optional CRC update
-fn write_u32<W: Write>(writer: &mut W, value: u32, hasher: Option<&mut Hasher>) -> std::io::Result<()> {
+fn write_u32<W: Write>(
+    writer: &mut W,
+    value: u32,
+    hasher: Option<&mut Hasher>,
+) -> std::io::Result<()> {
     let bytes = value.to_le_bytes();
     writer.write_all(&bytes)?;
     if let Some(h) = hasher {
@@ -37,7 +41,11 @@ fn read_u32<R: Read>(reader: &mut R, hasher: Option<&mut Hasher>) -> std::io::Re
 }
 
 /// Write u64 with optional CRC update
-fn write_u64<W: Write>(writer: &mut W, value: u64, hasher: Option<&mut Hasher>) -> std::io::Result<()> {
+fn write_u64<W: Write>(
+    writer: &mut W,
+    value: u64,
+    hasher: Option<&mut Hasher>,
+) -> std::io::Result<()> {
     let bytes = value.to_le_bytes();
     writer.write_all(&bytes)?;
     if let Some(h) = hasher {
@@ -131,7 +139,11 @@ impl MstgIndex {
         }
 
         // 4. Save posting lists
-        write_u64(&mut writer, self.posting_lists.len() as u64, Some(&mut hasher))?;
+        write_u64(
+            &mut writer,
+            self.posting_lists.len() as u64,
+            Some(&mut hasher),
+        )?;
         for plist in &self.posting_lists {
             let plist_bytes = bincode::serialize(plist)
                 .map_err(|_| RabitqError::InvalidPersistence("failed to serialize posting list"))?;
@@ -191,8 +203,9 @@ impl MstgIndex {
             reader.read_exact(&mut plist_bytes)?;
             hasher.update(&plist_bytes);
 
-            let plist: PostingList = bincode::deserialize(&plist_bytes)
-                .map_err(|_| RabitqError::InvalidPersistence("failed to deserialize posting list"))?;
+            let plist: PostingList = bincode::deserialize(&plist_bytes).map_err(|_| {
+                RabitqError::InvalidPersistence("failed to deserialize posting list")
+            })?;
             posting_lists.push(plist);
         }
 
@@ -204,16 +217,11 @@ impl MstgIndex {
         }
 
         // Reconstruct centroid vectors from posting lists
-        let centroid_vecs: Vec<Vec<f32>> = posting_lists
-            .iter()
-            .map(|p| p.centroid.clone())
-            .collect();
+        let centroid_vecs: Vec<Vec<f32>> =
+            posting_lists.iter().map(|p| p.centroid.clone()).collect();
 
-        let centroid_index = CentroidIndex::build(
-            centroid_vecs,
-            centroid_ids,
-            config.centroid_precision,
-        );
+        let centroid_index =
+            CentroidIndex::build(centroid_vecs, centroid_ids, config.centroid_precision);
 
         let directory = PostingListDirectory::new();
 
@@ -229,24 +237,24 @@ impl MstgIndex {
     fn save_hnsw(&self, base_path: &str) -> Result<(), RabitqError> {
         // Use hnsw_rs file_dump API
         // This creates {base_path}.hnsw.graph and {base_path}.hnsw.data
-        self.centroid_index
-            .save_hnsw(base_path)
-            .map_err(|e| RabitqError::Io(std::io::Error::new(
+        self.centroid_index.save_hnsw(base_path).map_err(|e| {
+            RabitqError::Io(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 format!("HNSW save failed: {}", e),
-            )))?;
+            ))
+        })?;
 
         Ok(())
     }
 
     /// Load HNSW graph using hnsw_rs reload API
     fn load_hnsw(&mut self, base_path: &str) -> Result<(), RabitqError> {
-        self.centroid_index
-            .load_hnsw(base_path)
-            .map_err(|e| RabitqError::Io(std::io::Error::new(
+        self.centroid_index.load_hnsw(base_path).map_err(|e| {
+            RabitqError::Io(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 format!("HNSW load failed: {}", e),
-            )))?;
+            ))
+        })?;
 
         Ok(())
     }
@@ -255,7 +263,7 @@ impl MstgIndex {
 impl CentroidIndex {
     /// Save HNSW to disk using hnsw_rs API
     pub(crate) fn save_hnsw(&self, base_path: &str) -> Result<(), String> {
-        use hnsw_rs::api::AnnT;  // Required for file_dump method
+        use hnsw_rs::api::AnnT; // Required for file_dump method
 
         // Ensure HNSW is built
         self.ensure_hnsw_built();
@@ -278,7 +286,10 @@ impl CentroidIndex {
 
         // Prepare directory and basename for hnsw_rs loader
         let path = PathBuf::from(base_path);
-        let dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        let dir = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
         let basename = path
             .file_name()
             .and_then(|s| s.to_str())
@@ -298,9 +309,7 @@ impl CentroidIndex {
         // 1. The HNSW owns its data (loaded from file)
         // 2. It will live as long as the CentroidIndex
         // 3. centroid_vecs is stable (in a Box)
-        let hnsw_static: Hnsw<'static, f32, DistL2> = unsafe {
-            std::mem::transmute(hnsw)
-        };
+        let hnsw_static: Hnsw<'static, f32, DistL2> = unsafe { std::mem::transmute(hnsw) };
 
         // Update cache
         let mut cache = self.hnsw_cache.write();
@@ -334,8 +343,8 @@ mod tests {
         // Need enough centroids for HNSW to build proper layers (aim for 500+ centroids)
         let data = generate_test_data(10000, 128);
         let config = MstgConfig {
-            max_posting_size: 20,  // Smaller posting size to generate more centroids
-            branching_factor: 8,   // Higher branching to create more leaf nodes
+            max_posting_size: 20, // Smaller posting size to generate more centroids
+            branching_factor: 8,  // Higher branching to create more leaf nodes
             ..Default::default()
         };
 
@@ -343,7 +352,13 @@ mod tests {
         let index = MstgIndex::build(&data, config.clone()).unwrap();
 
         // Save to temp file (using timestamp to avoid conflicts)
-        let path = format!("/tmp/test_mstg_save_load_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let path = format!(
+            "/tmp/test_mstg_save_load_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        );
         index.save_to_path(&path).unwrap();
 
         // Load index
@@ -351,7 +366,10 @@ mod tests {
 
         // Verify basic properties
         assert_eq!(index.posting_lists.len(), loaded_index.posting_lists.len());
-        assert_eq!(index.centroid_index.len(), loaded_index.centroid_index.len());
+        assert_eq!(
+            index.centroid_index.len(),
+            loaded_index.centroid_index.len()
+        );
 
         // Test search on both
         let query = &data[0];

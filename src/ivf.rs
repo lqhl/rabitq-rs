@@ -833,6 +833,8 @@ impl IvfRabitqIndex {
                     code,
                     binary_code_packed,
                     ex_code_packed,
+                    binary_code_unpacked: binary_code, // Cache unpacked version
+                    ex_code_unpacked: ex_code,         // Cache unpacked version
                     ex_bits: ex_bits as u8,
                     dim: padded_dim,
                     delta,
@@ -973,12 +975,11 @@ impl IvfRabitqIndex {
                     }
                 }
 
-                // Unpack binary code for computation
-                let binary_code = quantized.unpack_binary_code();
-                let mut binary_dot = 0.0f32;
-                for (&bit, &q_val) in binary_code.iter().zip(query_precomp.rotated_query.iter()) {
-                    binary_dot += (bit as f32) * q_val;
-                }
+                // Use SIMD-accelerated dot product with cached codes
+                let binary_dot = crate::simd::dot_u8_f32(
+                    &quantized.binary_code_unpacked,
+                    &query_precomp.rotated_query,
+                );
                 // Use precomputed k1x_sum_q instead of c1 * sum_query
                 let binary_term = binary_dot + query_precomp.k1x_sum_q;
                 let est_distance = quantized.f_add + g_add + quantized.f_rescale * binary_term;
@@ -1028,12 +1029,11 @@ impl IvfRabitqIndex {
                 };
 
                 if self.ex_bits > 0 {
-                    // Unpack ex code for computation
-                    let ex_code = quantized.unpack_ex_code();
-                    let mut ex_dot = 0.0f32;
-                    for (&code, &q_val) in ex_code.iter().zip(query_precomp.rotated_query.iter()) {
-                        ex_dot += (code as f32) * q_val;
-                    }
+                    // Use SIMD-accelerated dot product with cached codes
+                    let ex_dot = crate::simd::dot_u16_f32(
+                        &quantized.ex_code_unpacked,
+                        &query_precomp.rotated_query,
+                    );
                     // Use precomputed values: binary_scale, kbx_sum_q
                     let total_term =
                         query_precomp.binary_scale * binary_dot + ex_dot + query_precomp.kbx_sum_q;
