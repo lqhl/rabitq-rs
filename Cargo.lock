@@ -597,6 +597,7 @@ dependencies = [
  "crc32fast",
  "half",
  "hnsw_rs",
+ "libc",
  "matrixmultiply",
  "memmap2",
  "numpy",

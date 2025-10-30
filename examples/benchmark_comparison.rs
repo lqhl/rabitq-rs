@@ -169,7 +169,7 @@ fn benchmark_ivf(
         nlist,
         7, // total_bits
         Metric::L2,
-        RotatorType::MatrixRotator,
+        RotatorType::FhtKacRotator, // Changed from MatrixRotator for better build performance
         42,   // seed
         true, // use_faster_config
     )

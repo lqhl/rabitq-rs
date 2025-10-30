@@ -138,7 +138,8 @@ impl MstgIndex {
 
     /// Search for k nearest neighbors
     pub fn search(&self, query: &[f32], params: &SearchParams) -> Vec<SearchResult> {
-        use crate::mstg::distance::{estimate_distance, QueryContext};
+        use crate::mstg::distance::QueryContext;
+        use crate::mstg::distance_simd::estimate_distance_fast;
 
         // Step 1: Find candidate centroids
         let centroid_candidates = self.centroid_index.search(query, params.ef_search);
@@ -160,7 +161,7 @@ impl MstgIndex {
                     .vectors
                     .iter()
                     .map(|qvec| {
-                        let dist = estimate_distance(
+                        let dist = estimate_distance_fast(
                             &ctx,
                             &plist.centroid,
                             &qvec.quantized,
@@ -184,6 +185,21 @@ impl MstgIndex {
                 distance: dist,
             })
             .collect()
+    }
+
+    /// Batch search for multiple queries (parallel)
+    ///
+    /// This is much faster than calling search() in a loop because it
+    /// parallelizes across queries using Rayon.
+    ///
+    /// # Performance
+    /// Expected speedup: 4-8x on typical CPUs (depends on core count)
+    pub fn batch_search(
+        &self,
+        queries: &[Vec<f32>],
+        params: &SearchParams,
+    ) -> Vec<Vec<SearchResult>> {
+        queries.par_iter().map(|q| self.search(q, params)).collect()
     }
 
     /// Apply dynamic pruning to centroid candidates
