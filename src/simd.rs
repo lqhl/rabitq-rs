@@ -930,7 +930,7 @@ pub fn accumulate_batch_avx2(
     accumulate_batch_scalar(packed_codes, lut, dim, results);
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn accumulate_batch_avx2_impl(
     packed_codes: &[u8],
