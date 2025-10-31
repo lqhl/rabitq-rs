@@ -230,7 +230,7 @@ fn main() {
         nlist,
         7,
         Metric::L2,
-        RotatorType::MatrixRotator,
+        RotatorType::FhtKacRotator, // Changed from MatrixRotator for better build performance
         42,
         true,
     )

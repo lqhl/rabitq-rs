@@ -169,9 +169,9 @@ fn benchmark_ivf(
         nlist,
         7, // total_bits
         Metric::L2,
-        RotatorType::MatrixRotator,
-        42,   // seed
-        true, // use_faster_config
+        RotatorType::FhtKacRotator, // Changed from MatrixRotator for better build performance
+        42,                         // seed
+        true,                       // use_faster_config
     )
     .expect("Failed to build IVF index");
     let build_time_ms = start.elapsed().as_secs_f64() * 1000.0;

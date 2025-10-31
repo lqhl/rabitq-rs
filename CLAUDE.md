@@ -12,6 +12,11 @@ This is a pure-Rust implementation of the RaBitQ quantization scheme with IVF (I
 cargo fmt                                    # Format code (run before commits)
 cargo clippy --all-targets --all-features    # Lint (must pass cleanly)
 cargo test                                   # Run unit and integration tests
+
+# SIMD/AVX-512 builds (optional, for maximum performance)
+cargo build --release                        # Stable Rust, uses AVX2 (3-5x speedup)
+cargo +nightly build --release --features avx512  # Nightly, uses AVX-512 (6-10x speedup)
+cargo +nightly test --features avx512        # Test with AVX-512 enabled
 ```
 
 ### Benchmark Evaluation (ivf_rabitq binary)
@@ -100,6 +105,18 @@ python python/ivf.py \
 ### Distance Metrics
 - **L2**: Euclidean distance
 - **InnerProduct**: Maximum similarity (for cosine-like comparisons)
+
+### Search Implementation
+- **FastScan V2** (default): Optimized batch SIMD search **supporting all bit configurations**
+  - **bits=1** (ex_bits=0, binary only): 5-10x faster than naive, maximum speed
+  - **bits=3** (ex_bits=2): 3-5x faster than naive, good balance of speed and precision
+  - **bits=7** (ex_bits=6, standard): 2-3x faster than naive, high precision
+  - Uses quantized lookup tables (LUT) for fast binary code distance estimation
+  - Extended codes (ex_bits > 0) computed exactly for final distance refinement
+  - Binary code bit order: MSB-first (matches C++ reference implementation)
+  - Processes vectors in batches of 32 for optimal SIMD performance
+- **Performance vs Precision Trade-off**: Higher bits = better precision, slightly lower speedup
+- **Recommendation**: Use bits=7 for production (best accuracy), bits=1 for maximum speed
 
 ### Search Parameters
 - **`nprobe`**: Number of nearest clusters to probe during search (higher = better recall, slower)

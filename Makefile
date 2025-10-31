@@ -4,8 +4,10 @@ help:
 	@echo "RaBitQ-RS Python Bindings - Available Commands"
 	@echo ""
 	@echo "Build & Install:"
-	@echo "  make build-python      - Build Python package (development mode)"
-	@echo "  make install-python    - Install Python package from wheel"
+	@echo "  make build-python      - Build Python package with AVX-512 (development mode)"
+	@echo "  make build-python-compat - Build Python package without AVX-512 (compatibility)"
+	@echo "  make install-python    - Install Python package from wheel (with AVX-512)"
+	@echo "  make install-python-compat - Install Python package from wheel (without AVX-512)"
 	@echo "  make clean-python      - Clean Python build artifacts"
 	@echo ""
 	@echo "Testing:"
@@ -24,12 +26,29 @@ help:
 
 # Build Python package in development mode
 build-python:
-	@echo "Building Python package..."
+	@echo "Building Python package with ALL optimizations..."
+	maturin develop --release --features python,avx512,huge_pages
+
+# Build Python package without AVX-512 (for compatibility)
+build-python-compat:
+	@echo "Building Python package (without AVX-512)..."
 	maturin develop --release --features python
 
-# Build wheel and install
+# Build Python package with AVX-512 only (no huge pages)
+build-python-avx512:
+	@echo "Building Python package (AVX-512 only)..."
+	maturin develop --release --features python,avx512
+
+# Build wheel and install (with ALL optimizations)
 install-python:
-	@echo "Building wheel..."
+	@echo "Building wheel with ALL optimizations..."
+	maturin build --release --features python,avx512,huge_pages
+	@echo "Installing wheel..."
+	pip install --force-reinstall target/wheels/rabitq_rs-*.whl
+
+# Build wheel and install (without AVX-512, for compatibility)
+install-python-compat:
+	@echo "Building wheel (without AVX-512)..."
 	maturin build --release --features python
 	@echo "Installing wheel..."
 	pip install --force-reinstall target/wheels/rabitq_rs-*.whl

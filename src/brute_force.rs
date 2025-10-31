@@ -253,28 +253,25 @@ impl BruteForceRabitqIndex {
         let zero_centroid = vec![0.0f32; padded_dim];
 
         println!("Quantizing vectors...");
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let progress_counter = AtomicUsize::new(0);
         let total_vectors = rotated_data.len();
 
-        let vectors: Vec<QuantizedVector> = rotated_data
-            .par_iter()
-            .map(|vec| {
-                let quantized = quantize_with_centroid(vec, &zero_centroid, &config, metric);
+        // Sequential processing to ensure order preservation (for debugging persistence issues)
+        let mut vectors = Vec::with_capacity(total_vectors);
+        for (idx, vec) in rotated_data.iter().enumerate() {
+            let quantized = quantize_with_centroid(vec, &zero_centroid, &config, metric);
 
-                let completed = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                if completed % (total_vectors / 20).max(1) == 0 || completed == total_vectors {
-                    println!(
-                        "  Quantized {}/{} vectors ({:.1}%)",
-                        completed,
-                        total_vectors,
-                        100.0 * completed as f64 / total_vectors as f64
-                    );
-                }
+            let completed = idx + 1;
+            if completed % (total_vectors / 20).max(1) == 0 || completed == total_vectors {
+                println!(
+                    "  Quantized {}/{} vectors ({:.1}%)",
+                    completed,
+                    total_vectors,
+                    100.0 * completed as f64 / total_vectors as f64
+                );
+            }
 
-                quantized
-            })
-            .collect();
+            vectors.push(quantized);
+        }
         println!("Quantization complete");
 
         Ok(Self {
@@ -458,24 +455,27 @@ impl BruteForceRabitqIndex {
 
         let mut vectors = Vec::with_capacity(vector_count);
         for _ in 0..vector_count {
-            // Bit-packed format
+            // Read packed binary code
             let binary_packed_size = (padded_dim + 7) / 8;
-            let mut binary_packed = vec![0u8; binary_packed_size];
-            reader.read_exact(&mut binary_packed)?;
-            hasher.update(&binary_packed);
-            let binary_code = unpack_binary_code(&binary_packed, padded_dim);
+            let mut binary_code_packed = vec![0u8; binary_packed_size];
+            reader.read_exact(&mut binary_code_packed)?;
+            hasher.update(&binary_code_packed);
 
+            // Read packed ex code
             let ex_packed_size = if ex_bits > 0 {
                 ((padded_dim * ex_bits) + 7) / 8
             } else {
                 0
             };
-            let mut ex_packed = vec![0u8; ex_packed_size];
-            reader.read_exact(&mut ex_packed)?;
-            hasher.update(&ex_packed);
-            let ex_code = unpack_ex_code(&ex_packed, padded_dim, ex_bits as u8);
+            let mut ex_code_packed = vec![0u8; ex_packed_size];
+            reader.read_exact(&mut ex_code_packed)?;
+            hasher.update(&ex_code_packed);
 
-            // Reconstruct full code
+            // Unpack codes for cache and backward compatibility
+            let binary_code = unpack_binary_code(&binary_code_packed, padded_dim);
+            let ex_code = unpack_ex_code(&ex_code_packed, padded_dim, ex_bits as u8);
+
+            // Reconstruct full code for backward compatibility
             let code = reconstruct_code(&binary_code, &ex_code, ex_bits as u8);
 
             let delta = read_f32(&mut reader, Some(&mut hasher))?;
@@ -487,26 +487,12 @@ impl BruteForceRabitqIndex {
             let f_add_ex = read_f32(&mut reader, Some(&mut hasher))?;
             let f_rescale_ex = read_f32(&mut reader, Some(&mut hasher))?;
 
-            // Pack the codes for in-memory storage
-            use crate::simd;
-            let binary_code_packed_size = (padded_dim + 7) / 8;
-            let mut binary_code_packed = vec![0u8; binary_code_packed_size];
-            simd::pack_binary_code(&binary_code, &mut binary_code_packed, padded_dim);
-
-            let ex_code_packed_size = if ex_bits > 0 {
-                ((padded_dim * ex_bits) + 7) / 8
-            } else {
-                0
-            };
-            let mut ex_code_packed = vec![0u8; ex_code_packed_size];
-            if ex_bits > 0 {
-                simd::pack_ex_code(&ex_code, &mut ex_code_packed, padded_dim, ex_bits as u8);
-            }
-
             vectors.push(QuantizedVector {
                 code,
                 binary_code_packed,
                 ex_code_packed,
+                binary_code_unpacked: binary_code, // Cache unpacked version
+                ex_code_unpacked: ex_code,         // Cache unpacked version
                 ex_bits: ex_bits as u8,
                 dim: padded_dim,
                 delta,

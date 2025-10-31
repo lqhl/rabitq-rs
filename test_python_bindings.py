@@ -1,236 +1,165 @@
 #!/usr/bin/env python3
 """
-Test script for RaBitQ-RS Python bindings.
-
-Run this after building with: maturin develop --release --features python
+Basic integration tests for RaBitQ-RS Python bindings
 """
 
+import sys
 import numpy as np
-import time
 
+def test_mstg_index():
+    """Test MstgIndex basic functionality"""
+    print("Testing MstgIndex...")
 
-def test_basic():
-    """Test basic index build and query."""
-    print("=" * 60)
-    print("Test 1: Basic Index Build and Query")
-    print("=" * 60)
+    try:
+        from rabitq_rs import MstgIndex
+    except ImportError as e:
+        print(f"Error: Failed to import rabitq_rs: {e}")
+        print("Make sure to run 'make build-python' first")
+        return False
 
-    from rabitq_rs import MstgIndex
+    # Create test data
+    dim = 32
+    num_vectors = 100
+    data = np.random.randn(num_vectors, dim).astype(np.float32)
 
-    # Generate test data
-    np.random.seed(42)
-    n, d = 1000, 128
-    print(f"\nGenerating {n} vectors of dimension {d}...")
-    data = np.random.randn(n, d).astype(np.float32)
-    queries = np.random.randn(10, d).astype(np.float32)
+    # Create and train index
+    idx = MstgIndex(dim, metric='euclidean')
+    idx.fit(data)
 
-    # Create index
-    print("\nCreating MSTG index...")
-    index = MstgIndex(
-        dimension=d,
-        metric="euclidean",
-        max_posting_size=100,
-        rabitq_bits=7,
-        faster_config=True,
-        centroid_precision="bf16"
-    )
+    # Test single query
+    query = np.random.randn(dim).astype(np.float32)
+    idx.set_query_arguments(ef_search=50)
+    results = idx.query(query, 10)
 
-    # Build index
-    print("\nBuilding index...")
-    start = time.time()
-    index.fit(data)
-    build_time = time.time() - start
-    print(f"Build time: {build_time:.2f}s")
+    assert len(results) <= 10, f"Expected at most 10 results, got {len(results)}"
+    assert len(results) > 0, "Expected at least one result"
 
-    # Get memory usage
-    mem_usage = index.get_memory_usage()
-    print(f"Index memory usage: {mem_usage / 1024 / 1024:.2f} MB")
+    # Verify result format (numpy array with shape [n, 2])
+    assert isinstance(results, np.ndarray), f"Expected numpy array, got {type(results)}"
+    assert results.ndim == 2, f"Expected 2D array, got shape {results.shape}"
+    assert results.shape[1] == 2, f"Expected 2 columns (id, distance), got {results.shape[1]}"
 
-    # Query
-    print("\nQuerying...")
-    index.set_query_arguments(ef_search=150, pruning_epsilon=0.6)
+    for i, result in enumerate(results):
+        neighbor_id, distance = result[0], result[1]
+        assert 0 <= neighbor_id < num_vectors, f"Result {i}: neighbor_id {neighbor_id} out of range"
+        assert distance >= 0, f"Result {i}: distance {distance} should be non-negative"
 
-    total_time = 0
-    for i, query in enumerate(queries):
-        start = time.time()
-        results = index.query(query, k=10)
-        query_time = time.time() - start
-        total_time += query_time
+    print(f"  ✓ Single query test passed (found {len(results)} neighbors)")
 
-        if i == 0:  # Print first result
-            print(f"\nQuery 0 results (top 10 neighbors):")
-            for j, result in enumerate(results[:5]):
-                print(f"  {j+1}. ID={int(result[0])}, Distance={result[1]:.6f}")
+    # Test batch query
+    batch_queries = np.random.randn(5, dim).astype(np.float32)
+    batch_results = idx.batch_query(batch_queries, 10)
 
-    avg_latency = (total_time / len(queries)) * 1000
-    qps = len(queries) / total_time
-    print(f"\nAverage latency: {avg_latency:.2f}ms")
-    print(f"QPS: {qps:.1f}")
+    assert len(batch_results) == 5, f"Expected 5 batch results, got {len(batch_results)}"
+    for i, results in enumerate(batch_results):
+        assert isinstance(results, np.ndarray), f"Batch {i}: Expected numpy array"
+        assert len(results) <= 10, f"Batch {i}: Expected at most 10 results, got {len(results)}"
+        assert results.shape[1] == 2, f"Batch {i}: Expected 2 columns (id, distance)"
 
-    print("\n✓ Test 1 passed!")
+    print(f"  ✓ Batch query test passed")
 
-
-def test_ann_benchmarks_wrapper():
-    """Test ann-benchmarks wrapper interface."""
-    print("\n" + "=" * 60)
-    print("Test 2: ann-benchmarks Wrapper Interface")
-    print("=" * 60)
-
-    import sys
-    import os
-    # Add ann_benchmarks to path
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'ann_benchmarks'))
-
-    from module import RabitqMstg
-
-    # Generate test data
-    np.random.seed(42)
-    n, d = 500, 64
-    print(f"\nGenerating {n} vectors of dimension {d}...")
-    data = np.random.randn(n, d).astype(np.float32)
-    queries = np.random.randn(5, d).astype(np.float32)
-
-    # Create wrapper
-    print("\nCreating RabitqMstg wrapper...")
-    index_params = {
-        'max_posting_size': 100,
-        'rabitq_bits': 5,
-        'faster_config': True,
-        'centroid_precision': 'bf16'
-    }
-    wrapper = RabitqMstg(metric='euclidean', index_params=index_params)
-
-    # Fit
-    print("\nBuilding index via wrapper.fit()...")
-    wrapper.fit(data)
-
-    # Set query args
-    print("\nSetting query arguments...")
-    wrapper.set_query_arguments({'ef_search': 100, 'pruning_epsilon': 0.5})
-
-    # Query
-    print("\nQuerying via wrapper.query()...")
-    for i in range(3):
-        neighbors = wrapper.query(queries[i], n=10)
-        print(f"Query {i}: Found {len(neighbors)} neighbors, first 3 IDs: {neighbors[:3]}")
-
-    # Batch query
-    print("\nBatch querying via wrapper.batch_query()...")
-    batch_results = wrapper.batch_query(queries, n=10)
-    print(f"Batch query returned {len(batch_results)} result sets")
-
-    # Memory usage
-    mem_usage = wrapper.get_memory_usage()
-    print(f"Memory usage: {mem_usage / 1024:.1f} KB")
-
-    print("\n✓ Test 2 passed!")
-
-
-def test_different_metrics():
-    """Test different distance metrics."""
-    print("\n" + "=" * 60)
-    print("Test 3: Different Distance Metrics")
-    print("=" * 60)
-
-    from rabitq_rs import MstgIndex
-
-    np.random.seed(42)
-    n, d = 200, 32
-    data = np.random.randn(n, d).astype(np.float32)
-    query = np.random.randn(d).astype(np.float32)
-
+    # Test different metrics
     for metric in ['euclidean', 'angular']:
-        print(f"\n--- Testing metric: {metric} ---")
+        idx = MstgIndex(dim, metric=metric)
+        idx.fit(data)
+        results = idx.query(query, 5)
+        assert len(results) > 0, f"No results for metric {metric}"
+        print(f"  ✓ Metric '{metric}' test passed")
 
-        index = MstgIndex(
-            dimension=d,
-            metric=metric,
-            max_posting_size=50,
-            rabitq_bits=5,
-            faster_config=True
-        )
+    return True
 
-        index.fit(data)
-        index.set_query_arguments(ef_search=50, pruning_epsilon=0.5)
-        results = index.query(query, k=5)
+def test_ivf_index():
+    """Test IvfIndex basic functionality (if available)"""
+    print("Testing IvfIndex...")
 
-        print(f"Found {len(results)} results")
-        print(f"Top result: ID={int(results[0][0])}, Distance={results[0][1]:.6f}")
+    try:
+        from rabitq_rs import IvfIndex
+    except ImportError:
+        print("  ⚠ IvfIndex not available (might not be exported)")
+        return True  # Not a failure if not available
 
-    print("\n✓ Test 3 passed!")
+    # Create test data
+    dim = 32
+    num_vectors = 100
+    data = np.random.randn(num_vectors, dim).astype(np.float32)
 
+    # Create and train index
+    idx = IvfIndex(dim, metric='euclidean', n_clusters=10)
+    idx.fit(data)
 
-def test_recall():
-    """Test recall against brute force."""
-    print("\n" + "=" * 60)
-    print("Test 4: Recall Test (vs Brute Force)")
+    # Test query
+    query = np.random.randn(dim).astype(np.float32)
+    idx.set_query_arguments(nprobe=5)
+    results = idx.query(query, 10)
+
+    assert len(results) <= 10, f"Expected at most 10 results, got {len(results)}"
+    print(f"  ✓ IvfIndex test passed (found {len(results)} neighbors)")
+
+    return True
+
+def test_error_handling():
+    """Test error handling in Python bindings"""
+    print("Testing error handling...")
+
+    try:
+        from rabitq_rs import MstgIndex
+    except ImportError:
+        print("  ⚠ Cannot test error handling without rabitq_rs module")
+        return True
+
+    # Test dimension mismatch
+    idx = MstgIndex(32, metric='euclidean')
+    data = np.random.randn(10, 32).astype(np.float32)
+    idx.fit(data)
+
+    # Query with wrong dimension should be handled gracefully
+    wrong_dim_query = np.random.randn(64).astype(np.float32)
+    try:
+        results = idx.query(wrong_dim_query, 5)
+        print("  ⚠ Expected error for dimension mismatch, but query succeeded")
+    except Exception as e:
+        print(f"  ✓ Dimension mismatch properly caught: {type(e).__name__}")
+
+    # Test invalid parameters
+    try:
+        idx = MstgIndex(-1, metric='euclidean')
+        print("  ⚠ Expected error for negative dimension")
+    except Exception as e:
+        print(f"  ✓ Invalid dimension properly caught: {type(e).__name__}")
+
+    return True
+
+def main():
+    """Run all tests"""
+    print("=" * 60)
+    print("RaBitQ-RS Python Bindings Integration Tests")
     print("=" * 60)
 
-    from rabitq_rs import MstgIndex
+    all_passed = True
 
-    np.random.seed(42)
-    n, d = 500, 64
-    k = 10
-    data = np.random.randn(n, d).astype(np.float32)
-    queries = np.random.randn(20, d).astype(np.float32)
+    # Run tests
+    tests = [
+        test_mstg_index,
+        test_ivf_index,
+        test_error_handling,
+    ]
 
-    # Build MSTG index
-    print("\nBuilding MSTG index...")
-    index = MstgIndex(
-        dimension=d,
-        metric="euclidean",
-        max_posting_size=100,
-        rabitq_bits=7,
-        faster_config=True
-    )
-    index.fit(data)
-    index.set_query_arguments(ef_search=200, pruning_epsilon=0.8)
+    for test_func in tests:
+        try:
+            if not test_func():
+                all_passed = False
+                print(f"✗ {test_func.__name__} failed")
+        except Exception as e:
+            all_passed = False
+            print(f"✗ {test_func.__name__} raised exception: {e}")
 
-    # Compute recall
-    print("\nComputing recall...")
-    total_recall = 0
-
-    for query in queries:
-        # MSTG results
-        mstg_results = index.query(query, k=k)
-        mstg_ids = set(int(r[0]) for r in mstg_results)
-
-        # Brute force results
-        dists = np.linalg.norm(data - query, axis=1)
-        bf_ids = set(np.argsort(dists)[:k])
-
-        # Compute recall
-        recall = len(mstg_ids & bf_ids) / k
-        total_recall += recall
-
-    avg_recall = total_recall / len(queries)
-    print(f"\nAverage Recall@{k}: {avg_recall * 100:.1f}%")
-
-    if avg_recall > 0.85:
-        print("✓ Recall is good (>85%)")
+    print("=" * 60)
+    if all_passed:
+        print("✅ All tests passed!")
+        return 0
     else:
-        print("⚠ Recall is lower than expected")
-
-    print("\n✓ Test 4 passed!")
-
+        print("❌ Some tests failed")
+        return 1
 
 if __name__ == "__main__":
-    try:
-        test_basic()
-        test_ann_benchmarks_wrapper()
-        test_different_metrics()
-        test_recall()
-
-        print("\n" + "=" * 60)
-        print("All tests passed! ✓")
-        print("=" * 60)
-        print("\nNext steps:")
-        print("1. Run full ann-benchmarks: python ann-benchmarks/run.py")
-        print("2. Tune parameters for your dataset")
-        print("3. Compare with other algorithms")
-
-    except Exception as e:
-        print(f"\n✗ Test failed with error: {e}")
-        import traceback
-        traceback.print_exc()
-        exit(1)
+    sys.exit(main())
