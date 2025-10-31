@@ -1537,7 +1537,7 @@ fn test_simple_serialization() {
         .collect();
 
     // Create index and train
-    let mut index = IvfRabitqIndex::train(
+    let index = IvfRabitqIndex::train(
         &vectors,
         num_clusters,
         3, // bits

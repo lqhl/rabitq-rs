@@ -3,10 +3,13 @@
 //! This module provides memory allocation and management functions
 //! with optional huge page support for improved TLB performance.
 
+// Import alloc functions only when huge_pages feature is enabled on Linux
+#[cfg(all(feature = "huge_pages", target_os = "linux"))]
 use std::alloc::{alloc, dealloc, Layout};
 
 /// Get system page size
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 fn get_page_size() -> usize {
     use libc::sysconf;
     use libc::_SC_PAGESIZE;
@@ -22,6 +25,7 @@ fn get_page_size() -> usize {
 }
 
 /// Round up to nearest multiple
+#[allow(dead_code)]
 fn round_up_to_multiple_of(size: usize, multiple: usize) -> usize {
     ((size + multiple - 1) / multiple) * multiple
 }
@@ -34,6 +38,7 @@ fn round_up_to_multiple_of(size: usize, multiple: usize) -> usize {
 /// # Safety
 /// The pointer must be valid, page-aligned, and the size must be a multiple of page size.
 #[cfg(all(feature = "huge_pages", target_os = "linux"))]
+#[allow(dead_code)]
 pub unsafe fn enable_huge_pages(ptr: *mut u8, size: usize) -> std::io::Result<()> {
     use libc::{madvise, MADV_HUGEPAGE};
 
@@ -62,6 +67,7 @@ pub unsafe fn enable_huge_pages(ptr: *mut u8, size: usize) -> std::io::Result<()
 
 /// Enable huge pages - no-op on non-Linux or when feature is disabled
 #[cfg(not(all(feature = "huge_pages", target_os = "linux")))]
+#[allow(dead_code)]
 pub unsafe fn enable_huge_pages(_ptr: *mut u8, _size: usize) -> std::io::Result<()> {
     Ok(())
 }
@@ -198,6 +204,7 @@ pub fn allocate_aligned_vec<T: Default + Clone>(size: usize) -> Vec<T> {
 
 /// Helper to check if huge pages are available on the system
 #[cfg(all(feature = "huge_pages", target_os = "linux"))]
+#[allow(dead_code)]
 pub fn check_huge_pages_available() -> bool {
     use std::fs;
 
@@ -211,6 +218,7 @@ pub fn check_huge_pages_available() -> bool {
 
 /// Helper to check if huge pages are available - always false when not on Linux
 #[cfg(not(all(feature = "huge_pages", target_os = "linux")))]
+#[allow(dead_code)]
 pub fn check_huge_pages_available() -> bool {
     false
 }
@@ -222,7 +230,9 @@ pub fn log_huge_page_status() {
         if check_huge_pages_available() {
             eprintln!("Huge pages: ENABLED (may improve performance by 5-10%)");
         } else {
-            eprintln!("Huge pages: NOT AVAILABLE (enable transparent_hugepage for better performance)");
+            eprintln!(
+                "Huge pages: NOT AVAILABLE (enable transparent_hugepage for better performance)"
+            );
         }
     }
 

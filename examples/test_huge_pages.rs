@@ -12,15 +12,16 @@ fn main() {
     ];
 
     // Train a small index - this should trigger huge pages logging
-    let index = IvfRabitqIndex::train(
+    let _index = IvfRabitqIndex::train(
         &data,
-        2,  // nlist
-        7,  // bits
+        2, // nlist
+        7, // bits
         Metric::L2,
         RotatorType::FhtKacRotator,
-        42,  // seed
-        true,  // use_faster_config
-    ).expect("Failed to train index");
+        42,   // seed
+        true, // use_faster_config
+    )
+    .expect("Failed to train index");
 
     println!("Index created successfully!");
 }

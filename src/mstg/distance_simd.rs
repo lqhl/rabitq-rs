@@ -74,8 +74,7 @@ unsafe fn estimate_distance_avx2(
         let ex_dot = ex_u8_dot_f32_avx2(ctx.query, &ex_code_u8);
 
         let total_term = ctx.binary_scale * binary_dot + ex_dot + ctx.cb * ctx.sum_query;
-        let distance_ex = quantized.f_add_ex + g_add + quantized.f_rescale_ex * total_term;
-        distance_ex
+        quantized.f_add_ex + g_add + quantized.f_rescale_ex * total_term
     } else {
         distance_1bit
     }
@@ -411,8 +410,7 @@ unsafe fn estimate_distance_avx512(
         let ex_dot = ex_u8_dot_f32_avx512(ctx.query, &ex_code_u8);
 
         let total_term = ctx.binary_scale * binary_dot + ex_dot + ctx.cb * ctx.sum_query;
-        let distance_ex = quantized.f_add_ex + g_add + quantized.f_rescale_ex * total_term;
-        distance_ex
+        quantized.f_add_ex + g_add + quantized.f_rescale_ex * total_term
     } else {
         distance_1bit
     }

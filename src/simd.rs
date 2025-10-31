@@ -601,12 +601,13 @@ unsafe fn unpack_7bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
 /// SIMD-accelerated dot product: u8 vector with f32 vector
 /// Converts u8 to f32 and computes dot product
 #[inline]
+#[allow(dead_code)]
 pub fn dot_u8_f32(a: &[u8], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     unsafe {
-        return dot_u8_f32_avx2(a, b);
+        dot_u8_f32_avx2(a, b)
     }
 
     #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
@@ -623,7 +624,7 @@ pub fn dot_u16_f32(a: &[u16], b: &[f32]) -> f32 {
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     unsafe {
-        return dot_u16_f32_avx2(a, b);
+        dot_u16_f32_avx2(a, b)
     }
 
     #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
@@ -633,11 +634,13 @@ pub fn dot_u16_f32(a: &[u16], b: &[f32]) -> f32 {
 }
 
 #[inline]
+#[allow(dead_code)]
 fn dot_u8_f32_scalar(a: &[u8], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(&x, &y)| (x as f32) * y).sum()
 }
 
 #[inline]
+#[allow(dead_code)]
 fn dot_u16_f32_scalar(a: &[u16], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(&x, &y)| (x as f32) * y).sum()
 }
@@ -760,6 +763,7 @@ fn lowbit(x: usize) -> usize {
 /// # Arguments
 /// * `query` - Rotated query vector (scaled appropriately)
 /// * `lut` - Output lookup table as i8 (size: dim/4 * 16)
+#[allow(dead_code)]
 pub fn pack_lut_i8(query: &[f32], lut: &mut [i8]) {
     assert!(
         query.len() % 4 == 0,
@@ -816,6 +820,7 @@ pub fn pack_lut_f32(query: &[f32], lut: &mut [f32]) {
 /// Example: 0b0001 (LSB=1) -> 0b1000 (MSB=1)
 ///          0b0110 (LSB=0,1,1) -> 0b0110 (symmetric)
 #[inline]
+#[allow(dead_code)]
 fn reverse_4bit_pattern(pattern: u8) -> u8 {
     ((pattern & 0x01) << 3)
         | ((pattern & 0x02) << 1)
@@ -955,12 +960,12 @@ unsafe fn accumulate_batch_avx2_impl(
         // L1 cache prefetch (short distance - next iteration)
         if i + 128 < code_length {
             _mm_prefetch(packed_codes.as_ptr().add(i + 128) as *const i8, _MM_HINT_T0);
-            _mm_prefetch(lut.as_ptr().add(i + 128) as *const i8, _MM_HINT_T0);
+            _mm_prefetch(lut.as_ptr().add(i + 128), _MM_HINT_T0);
         }
         // L2 cache prefetch (medium distance)
         if i + 256 < code_length {
             _mm_prefetch(packed_codes.as_ptr().add(i + 256) as *const i8, _MM_HINT_T1);
-            _mm_prefetch(lut.as_ptr().add(i + 256) as *const i8, _MM_HINT_T1);
+            _mm_prefetch(lut.as_ptr().add(i + 256), _MM_HINT_T1);
         }
         // L3 cache prefetch (long distance)
         if i + 512 < code_length {
@@ -1188,8 +1193,8 @@ unsafe fn accumulate_batch_highacc_avx2_impl(
 
         let res_lo0_low = _mm256_shuffle_epi8(lut_low0, lo0);
         let res_lo0_high = _mm256_shuffle_epi8(lut_high0, lo0);
-        let res_hi0_low = _mm256_shuffle_epi8(lut_low0, hi0);
-        let res_hi0_high = _mm256_shuffle_epi8(lut_high0, hi0);
+        let _res_hi0_low = _mm256_shuffle_epi8(lut_low0, hi0);
+        let _res_hi0_high = _mm256_shuffle_epi8(lut_high0, hi0);
 
         // Accumulate with sign extension to 32-bit
         let res_lo0_low_32 = _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo0_low, 0));
@@ -1209,8 +1214,8 @@ unsafe fn accumulate_batch_highacc_avx2_impl(
 
             let res_lo1_low = _mm256_shuffle_epi8(lut_low1, lo1);
             let res_lo1_high = _mm256_shuffle_epi8(lut_high1, lo1);
-            let res_hi1_low = _mm256_shuffle_epi8(lut_low1, hi1);
-            let res_hi1_high = _mm256_shuffle_epi8(lut_high1, hi1);
+            let _res_hi1_low = _mm256_shuffle_epi8(lut_low1, hi1);
+            let _res_hi1_high = _mm256_shuffle_epi8(lut_high1, hi1);
 
             let res_lo1_low_32 = _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo1_low, 0));
             let res_lo1_high_32 = _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo1_high, 0));
@@ -1233,8 +1238,8 @@ unsafe fn accumulate_batch_highacc_avx2_impl(
     _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, final1);
 
     // Zero out remaining entries
-    for i in 16..FASTSCAN_BATCH_SIZE {
-        results[i] = 0;
+    for result in results.iter_mut().skip(16).take(FASTSCAN_BATCH_SIZE - 16) {
+        *result = 0;
     }
 }
 
@@ -1267,8 +1272,8 @@ unsafe fn accumulate_batch_highacc_avx512_impl(
 
         let res_lo_low = _mm512_shuffle_epi8(lut_low, lo);
         let res_lo_high = _mm512_shuffle_epi8(lut_high, lo);
-        let res_hi_low = _mm512_shuffle_epi8(lut_low, hi);
-        let res_hi_high = _mm512_shuffle_epi8(lut_high, hi);
+        let _res_hi_low = _mm512_shuffle_epi8(lut_low, hi);
+        let _res_hi_high = _mm512_shuffle_epi8(lut_high, hi);
 
         // Convert to 32-bit and accumulate
         // Use _mm512_extracti32x4_epi32 to extract 128-bit chunks
@@ -1286,11 +1291,11 @@ unsafe fn accumulate_batch_highacc_avx512_impl(
     let final_result = _mm512_add_epi32(accu_low[0], accu_high[0]);
 
     // Store all 32 results
-    _mm512_storeu_si512(results.as_mut_ptr() as *mut i32, final_result);
+    _mm512_storeu_si512(results.as_mut_ptr() as *mut _, final_result);
 
     // Store second half if needed
     if FASTSCAN_BATCH_SIZE > 16 {
-        _mm512_storeu_si512(results.as_mut_ptr().add(16) as *mut i32, accu_low[1]);
+        _mm512_storeu_si512(results.as_mut_ptr().add(16) as *mut _, accu_low[1]);
     }
 }
 
@@ -1305,8 +1310,7 @@ fn accumulate_batch_highacc_scalar(
     results.fill(0);
     let code_length = dim * 4;
 
-    for i in 0..code_length {
-        let code_byte = packed_codes[i];
+    for (i, &code_byte) in packed_codes.iter().enumerate().take(code_length) {
         let lo_nibble = (code_byte & 0x0F) as usize;
         let hi_nibble = ((code_byte >> 4) & 0x0F) as usize;
 
@@ -1341,8 +1345,7 @@ fn accumulate_batch_scalar(
     let code_length = dim * 4; // dim * 4 bytes for packed codes
 
     // Process each byte of packed codes
-    for i in 0..code_length {
-        let code_byte = packed_codes[i];
+    for (i, &code_byte) in packed_codes.iter().enumerate().take(code_length) {
         let lo_nibble = (code_byte & 0x0F) as usize;
         let hi_nibble = ((code_byte >> 4) & 0x0F) as usize;
 

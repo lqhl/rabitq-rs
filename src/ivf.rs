@@ -74,6 +74,7 @@ pub(crate) fn unpack_ex_code(packed: &[u8], dim: usize, ex_bits: u8) -> Vec<u16>
 }
 
 /// Reconstruct full code from binary_code and ex_code
+#[allow(dead_code)]
 fn reconstruct_code(binary_code: &[u8], ex_code: &[u16], ex_bits: u8) -> Vec<u16> {
     binary_code
         .iter()
@@ -210,15 +211,18 @@ const PERSIST_VERSION: u32 = 3; // V3: Unified memory layout with ClusterData
 /// Ensures data is aligned to cache line boundaries for optimal performance
 #[repr(C, align(64))]
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct AlignedVec<T> {
     data: Vec<T>,
 }
 
 impl<T> AlignedVec<T> {
+    #[allow(dead_code)]
     fn new() -> Self {
         Self { data: Vec::new() }
     }
 
+    #[allow(dead_code)]
     fn with_capacity(capacity: usize) -> Self {
         Self {
             data: Vec::with_capacity(capacity),
@@ -352,11 +356,13 @@ impl ClusterData {
 
     /// Extract binary code for a single vector (for naive search)
     /// Returns unpacked binary code as Vec<u8> where each element is 0 or 1
+    #[allow(dead_code)]
     fn get_vector_binary_code(&self, vec_idx: usize) -> &[u8] {
         &self.binary_codes_unpacked[vec_idx]
     }
 
     /// Get f_add for a single vector (for naive search)
+    #[allow(dead_code)]
     fn get_vector_f_add(&self, vec_idx: usize) -> f32 {
         let batch_idx = vec_idx / simd::FASTSCAN_BATCH_SIZE;
         let in_batch_idx = vec_idx % simd::FASTSCAN_BATCH_SIZE;
@@ -364,6 +370,7 @@ impl ClusterData {
     }
 
     /// Get f_rescale for a single vector (for naive search)
+    #[allow(dead_code)]
     fn get_vector_f_rescale(&self, vec_idx: usize) -> f32 {
         let batch_idx = vec_idx / simd::FASTSCAN_BATCH_SIZE;
         let in_batch_idx = vec_idx % simd::FASTSCAN_BATCH_SIZE;
@@ -371,6 +378,7 @@ impl ClusterData {
     }
 
     /// Mutable access to batch binary codes
+    #[allow(dead_code)]
     fn batch_bin_codes_mut(&mut self, batch_idx: usize) -> &mut [u8] {
         let stride = Self::batch_stride(self.padded_dim);
         let offset = batch_idx * stride;
@@ -379,6 +387,7 @@ impl ClusterData {
     }
 
     /// Mutable access to f_add parameters
+    #[allow(dead_code)]
     fn batch_f_add_mut(&mut self, batch_idx: usize) -> &mut [f32] {
         let stride = Self::batch_stride(self.padded_dim);
         let offset = batch_idx * stride + (self.padded_dim * simd::FASTSCAN_BATCH_SIZE / 8);
@@ -391,6 +400,7 @@ impl ClusterData {
     }
 
     /// Mutable access to f_rescale parameters
+    #[allow(dead_code)]
     fn batch_f_rescale_mut(&mut self, batch_idx: usize) -> &mut [f32] {
         let stride = Self::batch_stride(self.padded_dim);
         let binary_bytes = self.padded_dim * simd::FASTSCAN_BATCH_SIZE / 8;
@@ -405,6 +415,7 @@ impl ClusterData {
     }
 
     /// Mutable access to f_error parameters
+    #[allow(dead_code)]
     fn batch_f_error_mut(&mut self, batch_idx: usize) -> &mut [f32] {
         let stride = Self::batch_stride(self.padded_dim);
         let binary_bytes = self.padded_dim * simd::FASTSCAN_BATCH_SIZE / 8;
@@ -420,6 +431,7 @@ impl ClusterData {
     }
 
     /// Create new empty cluster
+    #[allow(dead_code)]
     fn new(centroid: Vec<f32>, padded_dim: usize, ex_bits: usize) -> Self {
         Self {
             centroid,
@@ -732,6 +744,7 @@ impl ClusterData {
 /// Temporary structure used during index construction
 /// After construction, vectors are packed into ClusterData's unified memory layout
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct TemporaryQuantizedVector {
     binary_code_packed: Vec<u8>,
     ex_code_packed: Vec<u8>,
@@ -1781,6 +1794,7 @@ impl IvfRabitqIndex {
     /// Helper method to search a cluster using batch FastScan with unified memory layout
     /// This processes vectors in batches of 32 for better SIMD performance
     /// Reference: C++ split_batch_estdist in estimator.hpp:25-71
+    #[allow(clippy::too_many_arguments)]
     fn search_cluster_v2_batched(
         &self,
         _cluster_id: usize,
@@ -1868,7 +1882,7 @@ impl IvfRabitqIndex {
             }
 
             // Step 1: Accumulate distances using FastScan SIMD with zero-copy access
-            let (ip_x0_qr_values, lut_delta, lut_sum_vl) = if use_highacc {
+            let (ip_x0_qr_values, _lut_delta, _lut_sum_vl) = if use_highacc {
                 // High-accuracy mode using i32 accumulators
                 let mut accu_res_i32 = [0i32; simd::FASTSCAN_BATCH_SIZE];
                 let lut_ha = lut_highacc.unwrap();
@@ -2168,7 +2182,7 @@ mod batch_search_tests {
         // Minimal test to verify LUT-based dot product matches direct computation
         let dim = 64;
         let padded_dim = 64;
-        let ex_bits = 0;
+        let _ex_bits = 0;
         let mut rng = StdRng::seed_from_u64(12345);
 
         // Create a single vector
@@ -2235,13 +2249,13 @@ mod batch_search_tests {
 
         // Print first 32 bytes of LUT as i8 and u8 for comparison
         print!("First 32 lut_i8 bytes (as i8): ");
-        for i in 0..32 {
-            print!("{} ", lut_i8[i]);
+        for val in lut_i8.iter().take(32) {
+            print!("{} ", val);
         }
         println!();
         print!("First 32 lut_i8 bytes (as u8): ");
-        for i in 0..32 {
-            print!("{} ", lut_i8[i] as u8);
+        for val in lut_i8.iter().take(32) {
+            print!("{} ", *val as u8);
         }
         println!();
 
@@ -2254,7 +2268,7 @@ mod batch_search_tests {
         // Manually compute what accumulate should return
         // Now with MSB-first packing, packed[0] bit 7 = binary_code_unpacked[0]
         let mut manual_accu_via_direct = 0.0f32;
-        for i in 0..padded_dim {
+        for (i, _) in rotated_query.iter().enumerate().take(padded_dim) {
             manual_accu_via_direct += quantized.binary_code_unpacked[i] as f32 * rotated_query[i];
         }
         println!(
@@ -2292,7 +2306,7 @@ mod batch_search_tests {
 
         // Manually compute what accu should be using lut_float
         let mut expected_result = 0.0f32;
-        for i in 0..dim {
+        for (i, _) in rotated_query.iter().enumerate().take(dim) {
             expected_result += quantized.binary_code_unpacked[i] as f32 * rotated_query[i];
         }
         println!("Expected (direct): {:.6}", expected_result);
