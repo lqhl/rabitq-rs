@@ -612,7 +612,7 @@ pub fn dot_u8_f32(a: &[u8], b: &[f32]) -> f32 {
 
     #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
     {
-        return dot_u8_f32_scalar(a, b);
+        dot_u8_f32_scalar(a, b)
     }
 }
 
@@ -629,7 +629,7 @@ pub fn dot_u16_f32(a: &[u16], b: &[f32]) -> f32 {
 
     #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
     {
-        return dot_u16_f32_scalar(a, b);
+        dot_u16_f32_scalar(a, b)
     }
 }
 
