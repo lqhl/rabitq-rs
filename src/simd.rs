@@ -878,6 +878,61 @@ pub fn pack_codes(codes: &[u8], num_vectors: usize, dim_bytes: usize, packed: &m
     }
 }
 
+/// Unpack a single vector's binary code from FastScan batch layout
+/// Reverses the pack_codes operation for one vector
+///
+/// # Arguments
+/// * `packed_codes` - Packed binary codes for a batch (padded_dim * 32 / 8 bytes)
+/// * `vec_idx` - Index of vector within batch (0-31)
+/// * `dim_bytes` - Number of bytes per vector (padded_dim / 8)
+/// * `binary_code` - Output buffer for unpacked binary code (padded_dim elements, each 0 or 1)
+pub fn unpack_single_vector(
+    packed_codes: &[u8],
+    vec_idx: usize,
+    dim_bytes: usize,
+    binary_code: &mut [u8],
+) {
+    assert!(vec_idx < FASTSCAN_BATCH_SIZE);
+    assert_eq!(binary_code.len(), dim_bytes * 8);
+    assert_eq!(packed_codes.len(), dim_bytes * FASTSCAN_BATCH_SIZE);
+
+    // Reverse KPERM0 permutation to find original position
+    let mut kperm0_inv = [0usize; FASTSCAN_BATCH_SIZE];
+    for (i, &perm_val) in KPERM0.iter().enumerate() {
+        kperm0_inv[perm_val] = i;
+        kperm0_inv[perm_val + 16] = i + 16;
+    }
+
+    let mut packed_offset = 0;
+
+    for col in 0..dim_bytes {
+        // Extract the packed data for this column
+        let mut col_0 = [0u8; FASTSCAN_BATCH_SIZE]; // upper 4 bits
+        let mut col_1 = [0u8; FASTSCAN_BATCH_SIZE]; // lower 4 bits
+
+        // Unpack according to KPERM0 permutation
+        for j in 0..16 {
+            let val0 = packed_codes[packed_offset + j];
+            let val1 = packed_codes[packed_offset + j + 16];
+
+            col_0[KPERM0[j]] = val0 & 15;
+            col_0[KPERM0[j] + 16] = val0 >> 4;
+            col_1[KPERM0[j]] = val1 & 15;
+            col_1[KPERM0[j] + 16] = val1 >> 4;
+        }
+
+        // Combine upper and lower 4 bits
+        let byte_val = (col_0[vec_idx] << 4) | col_1[vec_idx];
+
+        // Unpack bits into binary_code (each element is 0 or 1)
+        for bit in 0..8 {
+            binary_code[col * 8 + bit] = (byte_val >> (7 - bit)) & 1;
+        }
+
+        packed_offset += 32;
+    }
+}
+
 /// Accumulate distances for a batch of 32 vectors using FastScan
 /// Uses pre-computed lookup table (LUT) and SIMD shuffle for fast distance estimation
 /// Automatically dispatches to AVX-512, AVX2, or scalar implementation based on CPU features

@@ -266,16 +266,12 @@ struct ClusterData {
     ///   - f_error: 32 * 4 bytes (f32)
     batch_data: Vec<u8>,
 
-    /// Unpacked binary codes for naive search (per-vector)
-    /// Each vector: Vec<u8> of length padded_dim where each element is 0 or 1
-    /// Needed because extracting from packed FastScan format is complex
-    binary_codes_unpacked: Vec<Vec<u8>>,
-
-    /// Pre-unpacked extended codes (per-vector)
-    /// Each vector: Vec<u16> of length padded_dim
-    /// Memory trade-off: ~padded_dim * 2 bytes per vector
-    /// Avoids repeated unpacking during search (20-40% speedup)
-    ex_codes_unpacked: Vec<Vec<u16>>,
+    /// Packed extended codes (per-vector, C++-style on-demand unpacking)
+    /// Each vector: Vec<u8> containing bit-packed ex_code
+    /// Memory-efficient: ~(padded_dim * ex_bits / 8) bytes per vector
+    /// Unpacked on-demand only after lower-bound filtering (mimics C++ estimator.hpp:85-103)
+    /// Reference: OPTIMIZATION_PLAN.md - removes 4.4x memory overhead from pre-unpacking
+    ex_codes_packed: Vec<Vec<u8>>,
 
     /// Per-vector ex parameters
     f_add_ex: Vec<f32>,
@@ -354,13 +350,6 @@ impl ClusterData {
         }
     }
 
-    /// Extract binary code for a single vector (for naive search)
-    /// Returns unpacked binary code as Vec<u8> where each element is 0 or 1
-    #[allow(dead_code)]
-    fn get_vector_binary_code(&self, vec_idx: usize) -> &[u8] {
-        &self.binary_codes_unpacked[vec_idx]
-    }
-
     /// Get f_add for a single vector (for naive search)
     #[allow(dead_code)]
     fn get_vector_f_add(&self, vec_idx: usize) -> f32 {
@@ -437,8 +426,7 @@ impl ClusterData {
             centroid,
             ids: Vec::new(),
             batch_data: Vec::new(),
-            binary_codes_unpacked: Vec::new(),
-            ex_codes_unpacked: Vec::new(),
+            ex_codes_packed: Vec::new(),
             f_add_ex: Vec::new(),
             f_rescale_ex: Vec::new(),
             num_vectors: 0,
@@ -472,9 +460,8 @@ impl ClusterData {
         let stride = Self::batch_stride(padded_dim);
         let mut batch_data = crate::memory::allocate_aligned_vec::<u8>(stride * total_batches);
 
-        // Pre-allocate storage for unpacked data
-        let mut binary_codes_unpacked = Vec::with_capacity(num_vectors);
-        let mut ex_codes_unpacked = Vec::with_capacity(num_vectors);
+        // Pre-allocate storage for packed ex_codes and parameters
+        let mut ex_codes_packed = Vec::with_capacity(num_vectors);
         let mut f_add_ex = Vec::with_capacity(num_vectors);
         let mut f_rescale_ex = Vec::with_capacity(num_vectors);
 
@@ -493,8 +480,7 @@ impl ClusterData {
                 batch_idx,
                 padded_dim,
                 ex_bits,
-                &mut binary_codes_unpacked,
-                &mut ex_codes_unpacked,
+                &mut ex_codes_packed,
                 &mut f_add_ex,
                 &mut f_rescale_ex,
             );
@@ -541,8 +527,7 @@ impl ClusterData {
                 num_complete_batches,
                 padded_dim,
                 ex_bits,
-                &mut binary_codes_unpacked,
-                &mut ex_codes_unpacked,
+                &mut ex_codes_packed,
                 &mut f_add_ex,
                 &mut f_rescale_ex,
             );
@@ -552,8 +537,7 @@ impl ClusterData {
             centroid,
             ids,
             batch_data,
-            binary_codes_unpacked,
-            ex_codes_unpacked,
+            ex_codes_packed,
             f_add_ex,
             f_rescale_ex,
             num_vectors,
@@ -572,8 +556,7 @@ impl ClusterData {
         batch_idx: usize,
         padded_dim: usize,
         ex_bits: usize,
-        binary_codes_unpacked: &mut Vec<Vec<u8>>,
-        ex_codes_unpacked: &mut Vec<Vec<u16>>,
+        ex_codes_packed: &mut Vec<Vec<u8>>,
         f_add_ex: &mut Vec<f32>,
         f_rescale_ex: &mut Vec<f32>,
     ) {
@@ -631,20 +614,16 @@ impl ClusterData {
             }
         }
 
-        // Store unpacked codes - ONLY for actual vectors, not padding!
+        // Store packed ex_codes - ONLY for actual vectors, not padding!
+        // C++-style: Keep codes packed, unpack on-demand during search
         for vec in vectors.iter().take(actual_count) {
-            // Store unpacked binary code
-            binary_codes_unpacked.push(vec.binary_code_unpacked.clone());
-
-            // Store unpacked ex_code
+            // Store packed ex_code (no unpacking!)
             if ex_bits > 0 {
-                let ex_code_unpacked =
-                    unpack_ex_code(&vec.ex_code_packed, padded_dim, ex_bits as u8);
-                ex_codes_unpacked.push(ex_code_unpacked);
+                ex_codes_packed.push(vec.ex_code_packed.clone());
                 f_add_ex.push(vec.f_add_ex);
                 f_rescale_ex.push(vec.f_rescale_ex);
             } else {
-                ex_codes_unpacked.push(Vec::new());
+                ex_codes_packed.push(Vec::new());
                 f_add_ex.push(0.0);
                 f_rescale_ex.push(0.0);
             }
@@ -658,8 +637,7 @@ impl ClusterData {
         batch_idx: usize,
         padded_dim: usize,
         ex_bits: usize,
-        binary_codes_unpacked: &mut Vec<Vec<u8>>,
-        ex_codes_unpacked: &mut Vec<Vec<u16>>,
+        ex_codes_packed: &mut Vec<Vec<u8>>,
         f_add_ex: &mut Vec<f32>,
         f_rescale_ex: &mut Vec<f32>,
     ) {
@@ -716,20 +694,16 @@ impl ClusterData {
             }
         }
 
-        // Store unpacked codes for all vectors in batch
+        // Store packed ex_codes for all vectors in batch
+        // C++-style: Keep codes packed, unpack on-demand during search
         for vec in vectors.iter() {
-            // Store unpacked binary code
-            binary_codes_unpacked.push(vec.binary_code_unpacked.clone());
-
-            // Store unpacked ex_code
+            // Store packed ex_code (no unpacking!)
             if ex_bits > 0 {
-                let ex_code_unpacked =
-                    unpack_ex_code(&vec.ex_code_packed, padded_dim, ex_bits as u8);
-                ex_codes_unpacked.push(ex_code_unpacked);
+                ex_codes_packed.push(vec.ex_code_packed.clone());
                 f_add_ex.push(vec.f_add_ex);
                 f_rescale_ex.push(vec.f_rescale_ex);
             } else {
-                ex_codes_unpacked.push(Vec::new());
+                ex_codes_packed.push(Vec::new());
                 f_add_ex.push(0.0);
                 f_rescale_ex.push(0.0);
             }
@@ -1376,38 +1350,27 @@ impl IvfRabitqIndex {
             writer.write_all(&cluster.batch_data)?;
             hasher.update(&cluster.batch_data);
 
-            // Save binary_codes_unpacked
-            for binary_code in &cluster.binary_codes_unpacked {
-                let code_len = u64::try_from(binary_code.len()).map_err(|_| {
-                    RabitqError::InvalidPersistence("binary code length exceeds persistence limits")
-                })?;
-                write_u64(&mut writer, code_len, Some(&mut hasher))?;
-                for &bit in binary_code {
-                    writer.write_all(&[bit])?;
-                    hasher.update(&[bit]);
-                }
-            }
-
-            // Save pre-unpacked ex_codes
+            // Save packed ex_codes (C++-style on-demand unpacking)
             eprintln!(
-                "DEBUG SAVE: Cluster {}: ex_codes_unpacked.len()={}",
+                "DEBUG SAVE: Cluster {}: ex_codes_packed.len()={}",
                 i,
-                cluster.ex_codes_unpacked.len()
+                cluster.ex_codes_packed.len()
             );
-            for (j, ex_code) in cluster.ex_codes_unpacked.iter().enumerate() {
-                let ex_code_len = u64::try_from(ex_code.len()).map_err(|_| {
-                    RabitqError::InvalidPersistence("ex_code length exceeds persistence limits")
+            for (j, ex_code_packed) in cluster.ex_codes_packed.iter().enumerate() {
+                let ex_code_len = u64::try_from(ex_code_packed.len()).map_err(|_| {
+                    RabitqError::InvalidPersistence(
+                        "ex_code_packed length exceeds persistence limits",
+                    )
                 })?;
                 if j < 2 {
                     eprintln!(
-                        "DEBUG SAVE: Cluster {}: ex_code[{}].len()={}",
+                        "DEBUG SAVE: Cluster {}: ex_code_packed[{}].len()={}",
                         i, j, ex_code_len
                     );
                 }
                 write_u64(&mut writer, ex_code_len, Some(&mut hasher))?;
-                for &val in ex_code {
-                    write_u16(&mut writer, val, Some(&mut hasher))?;
-                }
+                writer.write_all(ex_code_packed)?;
+                hasher.update(ex_code_packed);
             }
 
             // Save ex parameters
@@ -1554,56 +1517,39 @@ impl IvfRabitqIndex {
             reader.read_exact(&mut batch_data)?;
             hasher.update(&batch_data);
 
-            // Load binary_codes_unpacked
-            let mut binary_codes_unpacked = Vec::with_capacity(num_vectors);
-            for _ in 0..num_vectors {
-                let code_len = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
-                // Validate code length
-                if code_len != padded_dim {
-                    return Err(RabitqError::InvalidPersistence(
-                        "binary code length mismatch - possible corruption",
-                    ));
-                }
-                let mut code = Vec::with_capacity(code_len);
-                for _ in 0..code_len {
-                    let mut buf = [0u8; 1];
-                    reader.read_exact(&mut buf)?;
-                    hasher.update(&buf);
-                    code.push(buf[0]);
-                }
-                binary_codes_unpacked.push(code);
-            }
-
-            // Load pre-unpacked ex_codes
+            // Load packed ex_codes (C++-style on-demand unpacking)
             eprintln!(
-                "DEBUG LOAD: Cluster {}: Loading {} ex_codes",
+                "DEBUG LOAD: Cluster {}: Loading {} ex_codes_packed",
                 i, num_vectors
             );
-            let mut ex_codes_unpacked = Vec::with_capacity(num_vectors);
+            let mut ex_codes_packed = Vec::with_capacity(num_vectors);
             for j in 0..num_vectors {
                 let ex_code_len = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
                 if j < 2 {
                     eprintln!(
-                        "DEBUG LOAD: Cluster {}: ex_code[{}].len()={}",
+                        "DEBUG LOAD: Cluster {}: ex_code_packed[{}].len()={}",
                         i, j, ex_code_len
                     );
                 }
 
                 // Validate ex_code_len is reasonable
                 // When ex_bits = 0, ex_code_len should be 0
-                // When ex_bits > 0, ex_code_len should equal padded_dim
-                let expected_ex_code_len = if ex_bits > 0 { padded_dim } else { 0 };
+                // When ex_bits > 0, ex_code_len should equal (padded_dim * ex_bits / 8)
+                let expected_ex_code_len = if ex_bits > 0 {
+                    padded_dim * ex_bits / 8
+                } else {
+                    0
+                };
                 if ex_code_len != expected_ex_code_len {
                     return Err(RabitqError::InvalidPersistence(
-                        "ex_code length mismatch - possible corruption or version incompatibility",
+                        "ex_code_packed length mismatch - possible corruption or version incompatibility",
                     ));
                 }
 
-                let mut ex_code = Vec::with_capacity(ex_code_len);
-                for _ in 0..ex_code_len {
-                    ex_code.push(read_u16(&mut reader, Some(&mut hasher))?);
-                }
-                ex_codes_unpacked.push(ex_code);
+                let mut ex_code_packed = vec![0u8; ex_code_len];
+                reader.read_exact(&mut ex_code_packed)?;
+                hasher.update(&ex_code_packed);
+                ex_codes_packed.push(ex_code_packed);
             }
 
             // Load ex parameters
@@ -1621,8 +1567,7 @@ impl IvfRabitqIndex {
                 centroid,
                 ids,
                 batch_data,
-                binary_codes_unpacked,
-                ex_codes_unpacked,
+                ex_codes_packed,
                 f_add_ex,
                 f_rescale_ex,
                 num_vectors,
@@ -2027,8 +1972,8 @@ impl IvfRabitqIndex {
                         diag.extended_evaluations += 1;
                     }
 
-                    // Extended code evaluation (OPTIMIZED)
-                    // Reference: C++ estimator.hpp:94-100 split_distance_boosting
+                    // Extended code evaluation (C++-style on-demand unpacking)
+                    // Reference: C++ estimator.hpp:85-103 split_distance_boosting
                     // Formula: f_add_ex + g_add + f_rescale_ex * (binary_scale * ip_x0_qr + ex_dot + kbxsumq)
                     //
                     // KEY OPTIMIZATION: Reuse ip_x0_qr computed by FastScan instead of recomputing binary_dot
@@ -2037,13 +1982,19 @@ impl IvfRabitqIndex {
                     //   - V1 structure access
                     //   - Redundant dot product computation
                     //   - Cache misses from scattered memory access
+                    //
+                    // MEMORY OPTIMIZATION: Unpack ex_code on-demand (only after lower-bound check)
+                    // C++ unpacks in split_distance_boosting, not beforehand
+                    // Saves 4.4x memory (GIST1M: 3,976 MB → 904 MB)
 
-                    // Use pre-unpacked ex_code (Phase 1 optimization)
-                    let ex_code_unpacked = &cluster.ex_codes_unpacked[global_idx];
+                    // Unpack ex_code on-demand (C++-style)
+                    let ex_code_packed = &cluster.ex_codes_packed[global_idx];
+                    let ex_code_unpacked =
+                        unpack_ex_code(ex_code_packed, self.padded_dim, self.ex_bits as u8);
 
                     // Compute ex_code dot product using SIMD
                     let ex_dot =
-                        crate::simd::dot_u16_f32(ex_code_unpacked, &query_precomp.rotated_query);
+                        crate::simd::dot_u16_f32(&ex_code_unpacked, &query_precomp.rotated_query);
 
                     // Compute distance using ip_x0_qr (not binary_dot!)
                     // This matches C++ behavior and avoids redundant computation
@@ -2140,10 +2091,20 @@ impl IvfRabitqIndex {
                 Metric::InnerProduct => -dot_query_centroid,
             };
             for vec_idx in 0..cluster.num_vectors {
-                // Extract data for this vector using new ClusterData API
-                let binary_code = cluster.get_vector_binary_code(vec_idx);
+                // Extract data for this vector using ClusterData API
                 let f_add = cluster.get_vector_f_add(vec_idx);
                 let f_rescale = cluster.get_vector_f_rescale(vec_idx);
+
+                // Unpack binary code on-demand from FastScan batch layout
+                // Note: This is only used in naive search (test code)
+                let batch_idx = vec_idx / simd::FASTSCAN_BATCH_SIZE;
+                let in_batch_idx = vec_idx % simd::FASTSCAN_BATCH_SIZE;
+                let packed_codes = cluster.batch_bin_codes(batch_idx);
+
+                // Unpack binary code for this vector
+                let dim_bytes = self.padded_dim / 8;
+                let mut binary_code = vec![0u8; self.padded_dim];
+                simd::unpack_single_vector(packed_codes, in_batch_idx, dim_bytes, &mut binary_code);
 
                 let mut binary_dot = 0.0f32;
                 for (&bit, &q_val) in binary_code.iter().zip(rotated_query.iter()) {
@@ -2153,7 +2114,10 @@ impl IvfRabitqIndex {
                 let mut distance = f_add + g_add + f_rescale * binary_term;
 
                 if self.ex_bits > 0 {
-                    let ex_code = &cluster.ex_codes_unpacked[vec_idx];
+                    // Unpack ex_code on-demand (C++-style)
+                    let ex_code_packed = &cluster.ex_codes_packed[vec_idx];
+                    let ex_code =
+                        unpack_ex_code(ex_code_packed, self.padded_dim, self.ex_bits as u8);
                     let mut ex_dot = 0.0f32;
                     for (&code, &q_val) in ex_code.iter().zip(rotated_query.iter()) {
                         ex_dot += (code as f32) * q_val;
