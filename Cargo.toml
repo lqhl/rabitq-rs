@@ -52,3 +52,10 @@ huge_pages = []  # Enable huge page memory support for better TLB efficiency
 
 [package.metadata.docs.rs]
 all-features = true
+
+[profile.release]
+opt-level = 3          # Maximum optimization
+codegen-units = 1      # Better optimization across the entire crate
+lto = "fat"            # Link-time optimization for cross-crate inlining
+panic = "abort"        # Smaller binary, slightly faster
+strip = false          # Keep debug symbols for profiling

@@ -1684,6 +1684,28 @@ impl IvfRabitqIndex {
         self.search_fastscan(query, params, None, Some(filter))
     }
 
+    /// Batch search for multiple queries in parallel using rayon
+    ///
+    /// # Performance
+    /// Expected speedup: 2-8x on typical CPUs (depends on core count and batch size)
+    ///
+    /// # Arguments
+    /// * `queries` - Slice of query vectors
+    /// * `params` - Search parameters (top_k, nprobe)
+    ///
+    /// # Returns
+    /// A vector of search results for each query, in the same order as the input queries
+    pub fn batch_search(
+        &self,
+        queries: &[&[f32]],
+        params: SearchParams,
+    ) -> Vec<Result<Vec<SearchResult>, RabitqError>> {
+        queries
+            .par_iter()
+            .map(|query| self.search(query, params))
+            .collect()
+    }
+
     fn search_fastscan(
         &self,
         query: &[f32],

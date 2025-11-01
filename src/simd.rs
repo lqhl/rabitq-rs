@@ -954,24 +954,9 @@ unsafe fn accumulate_batch_avx2_impl(
     let mut accu3 = _mm256_setzero_si256();
 
     // Process 64 bytes at a time (2 * 32) to match C++ implementation
+    // Let CPU hardware prefetcher handle memory prefetching automatically
     let mut i = 0;
     while i + 63 < code_length {
-        // Multi-level prefetching for optimal cache utilization
-        // L1 cache prefetch (short distance - next iteration)
-        if i + 128 < code_length {
-            _mm_prefetch(packed_codes.as_ptr().add(i + 128) as *const i8, _MM_HINT_T0);
-            _mm_prefetch(lut.as_ptr().add(i + 128), _MM_HINT_T0);
-        }
-        // L2 cache prefetch (medium distance)
-        if i + 256 < code_length {
-            _mm_prefetch(packed_codes.as_ptr().add(i + 256) as *const i8, _MM_HINT_T1);
-            _mm_prefetch(lut.as_ptr().add(i + 256), _MM_HINT_T1);
-        }
-        // L3 cache prefetch (long distance)
-        if i + 512 < code_length {
-            _mm_prefetch(packed_codes.as_ptr().add(i + 512) as *const i8, _MM_HINT_T2);
-        }
-
         // First 32 bytes
         let c = _mm256_loadu_si256(packed_codes.as_ptr().add(i) as *const __m256i);
         let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i) as *const __m256i);
