@@ -1,46 +1,5 @@
 # RaBitQ Rust vs C++ 性能分析报告与优化路径
 
-## 2025-10-30 更新：Huge Pages 优化修复
-
-### 问题描述
-Rust 实现在启用 huge pages 时出现错误：
-```
-Warning: Could not enable huge pages: Invalid argument (os error 22)
-```
-
-### 根本原因
-`madvise` 系统调用失败（EINVAL，错误码 22），原因：
-1. Rust 的标准 Vec 分配不保证页对齐
-2. 传递给 `madvise` 的内存地址和大小未正确对齐到页边界
-3. 不同于使用 `std::aligned_alloc` 的 C++ 实现，Rust 版本使用标准堆分配
-
-### 解决方案
-参考 C++ 实现，实现了正确的页对齐内存分配：
-
-1. **页对齐**：添加 `get_page_size()` 函数动态查询系统页大小
-2. **对齐分配**：创建 `AlignedVec<T>` 结构体，使用 `std::alloc::alloc` 和正确的 Layout 实现页对齐内存
-3. **大小舍入**：添加 `round_up_to_multiple_of()` 确保大小页对齐
-4. **优雅处理**：`madvise` 失败时不报错（仅作为优化提示）
-
-### 验证结果
-```bash
-# 修复前：
-Warning: Could not enable huge pages: Invalid argument (os error 22)
-
-# 修复后：
-Huge pages: ENABLED (may improve performance by 5-10%)
-# 无警告！
-```
-
-### 性能影响
-- Huge pages 减少 TLB（Translation Lookaside Buffer）缺失
-- 预期性能提升：大数据集下 5-10%
-- 对大型连续内存区域（如向量数据库）最有效
-
----
-
-# RaBitQ Rust vs C++ 性能分析报告与优化路径
-
 ## 执行摘要
 
 通过深入分析 Rust 版本与 C++ 原版 RaBitQ 实现，我们发现了多个性能差距的根本原因。尽管 Rust 版本已经实现了 FastScan SIMD 批处理，但在几个关键方面仍存在优化空间。

@@ -16,6 +16,7 @@ pub mod python_bindings;
 mod kmeans;
 mod math;
 mod memory;
+mod prefetch;
 mod quantizer;
 mod rotation;
 mod simd;
