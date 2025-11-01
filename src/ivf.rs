@@ -285,6 +285,7 @@ struct ClusterData {
 
 impl ClusterData {
     /// Calculate bytes per batch in contiguous layout
+    #[inline(always)]
     fn batch_stride(padded_dim: usize) -> usize {
         let binary_codes_bytes = padded_dim * simd::FASTSCAN_BATCH_SIZE / 8;
         let params_bytes = std::mem::size_of::<f32>() * simd::FASTSCAN_BATCH_SIZE * 3; // f_add, f_rescale, f_error
@@ -292,16 +293,19 @@ impl ClusterData {
     }
 
     /// Get number of complete batches
+    #[inline(always)]
     fn num_complete_batches(&self) -> usize {
         self.num_vectors / simd::FASTSCAN_BATCH_SIZE
     }
 
     /// Get number of remainder vectors
+    #[inline(always)]
     fn num_remainder_vectors(&self) -> usize {
         self.num_vectors % simd::FASTSCAN_BATCH_SIZE
     }
 
     /// Zero-copy access to packed binary codes for a batch
+    #[inline(always)]
     fn batch_bin_codes(&self, batch_idx: usize) -> &[u8] {
         let stride = Self::batch_stride(self.padded_dim);
         let offset = batch_idx * stride;
@@ -310,6 +314,7 @@ impl ClusterData {
     }
 
     /// Zero-copy access to f_add parameters for a batch
+    #[inline(always)]
     fn batch_f_add(&self, batch_idx: usize) -> &[f32] {
         let stride = Self::batch_stride(self.padded_dim);
         let offset = batch_idx * stride + (self.padded_dim * simd::FASTSCAN_BATCH_SIZE / 8);
@@ -322,6 +327,7 @@ impl ClusterData {
     }
 
     /// Zero-copy access to f_rescale parameters for a batch
+    #[inline(always)]
     fn batch_f_rescale(&self, batch_idx: usize) -> &[f32] {
         let stride = Self::batch_stride(self.padded_dim);
         let binary_bytes = self.padded_dim * simd::FASTSCAN_BATCH_SIZE / 8;
@@ -336,6 +342,7 @@ impl ClusterData {
     }
 
     /// Zero-copy access to f_error parameters for a batch
+    #[inline(always)]
     fn batch_f_error(&self, batch_idx: usize) -> &[f32] {
         let stride = Self::batch_stride(self.padded_dim);
         let binary_bytes = self.padded_dim * simd::FASTSCAN_BATCH_SIZE / 8;
@@ -1803,50 +1810,8 @@ impl IvfRabitqIndex {
             let batch_end = (batch_start + simd::FASTSCAN_BATCH_SIZE).min(cluster.num_vectors);
             let actual_batch_size = batch_end - batch_start;
 
-            // Multi-level cache prefetching (Phase 2 optimization)
-            // Prefetch at different levels for optimal cache utilization
-            #[cfg(target_arch = "x86_64")]
-            unsafe {
-                use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0, _MM_HINT_T1, _MM_HINT_T2};
-
-                // L1 cache: Prefetch next batch (will be used soon)
-                if batch_idx + 1 < total_batches {
-                    let next_batch_codes = cluster.batch_bin_codes(batch_idx + 1);
-                    let next_batch_f_add = cluster.batch_f_add(batch_idx + 1);
-                    let next_batch_f_rescale = cluster.batch_f_rescale(batch_idx + 1);
-
-                    // Prefetch codes (most critical data)
-                    _mm_prefetch(next_batch_codes.as_ptr() as *const i8, _MM_HINT_T0);
-                    if next_batch_codes.len() > 256 {
-                        _mm_prefetch(next_batch_codes.as_ptr().add(256) as *const i8, _MM_HINT_T0);
-                    }
-                    if next_batch_codes.len() > 512 {
-                        _mm_prefetch(next_batch_codes.as_ptr().add(512) as *const i8, _MM_HINT_T0);
-                    }
-
-                    // Prefetch parameters
-                    _mm_prefetch(next_batch_f_add.as_ptr() as *const i8, _MM_HINT_T0);
-                    _mm_prefetch(next_batch_f_rescale.as_ptr() as *const i8, _MM_HINT_T0);
-                }
-
-                // L2 cache: Prefetch batch+2 (will be used later)
-                if batch_idx + 2 < total_batches {
-                    let next2_batch_codes = cluster.batch_bin_codes(batch_idx + 2);
-                    _mm_prefetch(next2_batch_codes.as_ptr() as *const i8, _MM_HINT_T1);
-                    if next2_batch_codes.len() > 256 {
-                        _mm_prefetch(
-                            next2_batch_codes.as_ptr().add(256) as *const i8,
-                            _MM_HINT_T1,
-                        );
-                    }
-                }
-
-                // L3 cache: Prefetch batch+3 (speculative)
-                if batch_idx + 3 < total_batches {
-                    let next3_batch_codes = cluster.batch_bin_codes(batch_idx + 3);
-                    _mm_prefetch(next3_batch_codes.as_ptr() as *const i8, _MM_HINT_T2);
-                }
-            }
+            // Rely on CPU hardware prefetcher (like C++ version)
+            // Manual prefetching removed to avoid cache pollution
 
             // Step 1: Accumulate distances using FastScan SIMD with zero-copy access
             let (ip_x0_qr_values, _lut_delta, _lut_sum_vl) = if use_highacc {
