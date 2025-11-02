@@ -77,7 +77,6 @@ pub unsafe fn enable_huge_pages(_ptr: *mut u8, _size: usize) -> std::io::Result<
 pub struct AlignedVec<T> {
     ptr: *mut T,
     len: usize,
-    capacity: usize,
     layout: Layout,
 }
 
@@ -90,7 +89,6 @@ impl<T: Default + Clone> AlignedVec<T> {
 
         // Round up to page boundary for better huge page support
         let aligned_byte_size = round_up_to_multiple_of(byte_size, page_size);
-        let aligned_capacity = aligned_byte_size / elem_size;
 
         // Create layout with page alignment
         let layout = Layout::from_size_align(aligned_byte_size, page_size)
@@ -119,7 +117,6 @@ impl<T: Default + Clone> AlignedVec<T> {
         AlignedVec {
             ptr,
             len: size,
-            capacity: aligned_capacity,
             layout,
         }
     }
