@@ -207,14 +207,39 @@ pub fn quantize_with_centroid(
     let mut binary_code_packed = vec![0u8; binary_code_packed_size];
     simd::pack_binary_code(&binary_code, &mut binary_code_packed, dim);
 
-    let ex_code_packed_size = if ex_bits > 0 {
-        ((dim * ex_bits) + 7) / 8
-    } else {
-        0
+    // Use C++-compatible packing format for ex_code (Phase 4 optimization)
+    // This enables direct SIMD operations without unpacking overhead
+    let ex_code_packed_size = match ex_bits {
+        0 => dim / 16 * 2,  // 1-bit total (binary only), but allocate for consistency
+        1 => dim / 16 * 2,  // 2-bit total (1-bit ex-code) - not commonly used
+        2 => dim / 16 * 4,  // 3-bit total (2-bit ex-code)
+        6 => dim / 16 * 12, // 7-bit total (6-bit ex-code)
+        _ => ((dim * ex_bits) + 7) / 8, // Fallback for other bit configs
     };
     let mut ex_code_packed = vec![0u8; ex_code_packed_size];
-    if ex_bits > 0 {
-        simd::pack_ex_code(&ex_code, &mut ex_code_packed, dim, ex_bits as u8);
+
+    // Pack using C++-compatible format based on ex_bits
+    match ex_bits {
+        0 => {
+            // Binary-only: no ex-code to pack (all zeros)
+            // Keep packed array as zeros
+        }
+        1 => {
+            // 1-bit ex-code (2-bit total RaBitQ)
+            simd::pack_ex_code_1bit_cpp_compat(&ex_code, &mut ex_code_packed, dim);
+        }
+        2 => {
+            // 2-bit ex-code (3-bit total RaBitQ)
+            simd::pack_ex_code_2bit_cpp_compat(&ex_code, &mut ex_code_packed, dim);
+        }
+        6 => {
+            // 6-bit ex-code (7-bit total RaBitQ)
+            simd::pack_ex_code_6bit_cpp_compat(&ex_code, &mut ex_code_packed, dim);
+        }
+        _ => {
+            // Fallback to generic packing for unsupported bit configs
+            simd::pack_ex_code(&ex_code, &mut ex_code_packed, dim, ex_bits as u8);
+        }
     }
 
     QuantizedVector {

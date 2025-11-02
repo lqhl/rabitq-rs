@@ -383,7 +383,7 @@ fn index_persistence_detects_corruption() {
     let index = IvfRabitqIndex::train(
         &data,
         24,
-        6,
+        7, // Changed from 6 to 7 (standard 7-bit config with ex_bits=6)
         Metric::L2,
         RotatorType::FhtKacRotator,
         4242,
@@ -420,7 +420,7 @@ fn index_persistence_validates_vector_count() {
     let index = IvfRabitqIndex::train(
         &data,
         16,
-        5,
+        3, // Changed from 5 to 3 (standard 3-bit config with ex_bits=2)
         Metric::InnerProduct,
         RotatorType::FhtKacRotator,
         9001,

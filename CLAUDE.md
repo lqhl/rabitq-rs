@@ -5,6 +5,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Overview
 This is a pure-Rust implementation of the RaBitQ quantization scheme with IVF (Inverted File) search capabilities. The project mirrors the behavior of the C++ RaBitQ Library and provides tools to reproduce the GIST benchmark pipeline.
 
+## Performance Analysis & Optimization Plans
+
+**Current Status**: Rust achieves ~85% of C++ performance. Main bottleneck: ~15% overhead from unpacking ex-codes.
+
+**Key Documents**:
+- `docs/PACKING_FORMAT_ANALYSIS.md` - Deep technical analysis of packing format differences
+- `docs/NEXT_SESSION_PROMPT.md` - Roadmap for rewriting packing system to match C++
+
+**Root Cause**: Incompatible ex-code packing formats prevent direct SIMD operations on packed data.
+- C++: Never unpacks, uses specialized SIMD functions operating directly on packed data
+- Rust: Must unpack ex-codes before dot product computation
+
+**Next Steps**: Rewrite Rust packing system to match C++ SIMD-optimized format (estimated 10-15 days).
+
 ## Key Commands
 
 ### Build, Test, and Lint
@@ -148,6 +162,40 @@ python python/ivf.py \
 2. Run `cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test`
 3. Create a new release tag (e.g., `v0.1.3`) and push to GitHub
 4. The GitHub Actions workflow will automatically publish the new version to crates.io
+
+## Optimization Guidelines (IMPORTANT!)
+
+### Critical Lessons from Failed Optimizations
+1. **LUT Building Must Not Be Changed**
+   - The LUT (Lookup Table) building algorithm in `src/ivf.rs` uses O(16*4) complexity
+   - KPOS tables found in C++ code are NOT for dynamic programming optimization
+   - Attempting to optimize with DP caused recall to drop to nearly 0
+   - Keep the original nested loop algorithm that correctly computes all 16 combinations
+
+2. **Always Verify Recall After Optimizations**
+   - Every optimization MUST be tested with recall accuracy
+   - Use `test_recall_accuracy.py` to verify recall > 0.5 minimum
+   - Performance gains are meaningless if recall drops significantly
+
+3. **Safe Optimization Areas**
+   - Memory alignment and prefetching
+   - Loop unrolling (with careful verification)
+   - SIMD instruction optimization (but verify accumulator logic)
+   - Cache-friendly data layouts
+   - Parallelization of independent operations
+
+4. **Unsafe Optimization Areas**
+   - LUT building algorithm
+   - Core distance computation logic
+   - Quantization algorithms
+   - Any fundamental algorithmic changes
+
+### Testing Protocol for New Optimizations
+1. Create a branch for the optimization
+2. Implement the change
+3. Run `test_recall_accuracy.py` immediately
+4. Only if recall is maintained (> 0.5), proceed with performance testing
+5. Document both performance gains AND recall verification
 
 ## Commit Style
 - Short Title Case subjects (e.g., "Rewrite K-Means Trainer")
