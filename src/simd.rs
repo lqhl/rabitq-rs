@@ -1476,16 +1476,37 @@ pub fn ip_packed_ex6_f32(query: &[f32], packed_ex_code: &[u8], padded_dim: usize
 #[allow(dead_code)]
 #[allow(clippy::needless_range_loop)]
 fn ip_packed_ex2_f32_scalar(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
-    // Unpack and compute dot product
+    // Unpack C++ compatible format and compute dot product
+    // Format: 16 codes packed into 4 bytes with interleaved layout
     let mut sum = 0.0f32;
-    for i in 0..padded_dim {
-        let bit_offset = i * 2;
-        let byte_idx = bit_offset / 8;
-        let bit_in_byte = bit_offset % 8;
+    let mut code_idx = 0;
 
-        // Extract 2 bits
-        let code = ((packed_ex_code[byte_idx] >> bit_in_byte) & 0b11) as u16;
-        sum += (code as f32) * query[i];
+    for chunk in 0..(padded_dim / 16) {
+        let base = chunk * 4;
+        // Read 4 bytes as u32 (little-endian)
+        let compact = u32::from_le_bytes([
+            packed_ex_code[base],
+            packed_ex_code[base + 1],
+            packed_ex_code[base + 2],
+            packed_ex_code[base + 3],
+        ]);
+
+        // Extract 16 codes using C++ format (interleaved 2-bit values)
+        for i in 0..4 {
+            let byte_offset = i * 8;
+            // Extract 4 codes from each of the 4 shifted versions
+            let c0 = ((compact >> byte_offset) & 0x3) as f32;
+            let c1 = ((compact >> (byte_offset + 2)) & 0x3) as f32;
+            let c2 = ((compact >> (byte_offset + 4)) & 0x3) as f32;
+            let c3 = ((compact >> (byte_offset + 6)) & 0x3) as f32;
+
+            sum += c0 * query[code_idx];
+            sum += c1 * query[code_idx + 4];
+            sum += c2 * query[code_idx + 8];
+            sum += c3 * query[code_idx + 12];
+            code_idx += 1;
+        }
+        code_idx += 12; // Move to next chunk
     }
     sum
 }
@@ -1494,33 +1515,62 @@ fn ip_packed_ex2_f32_scalar(query: &[f32], packed_ex_code: &[u8], padded_dim: us
 #[allow(dead_code)]
 #[allow(clippy::needless_range_loop)]
 fn ip_packed_ex6_f32_scalar(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
-    // Unpack and compute dot product
+    // Unpack C++ compatible 6-bit format and compute dot product
+    // Format: 16 codes packed into 12 bytes
+    // - First 8 bytes: lower 4 bits (interleaved: even codes in low nibble, odd in high)
+    // - Next 4 bytes: upper 2 bits (interleaved like 2-bit packing)
     let mut sum = 0.0f32;
-    for i in 0..padded_dim {
-        let bit_offset = i * 6;
-        let byte_offset = bit_offset / 8;
-        let bit_in_byte = bit_offset % 8;
+    let mut code_idx = 0;
 
-        // Extract 6 bits (may span 2 bytes)
-        let mut code = 0u16;
-        let mut remaining_bits = 6;
-        let mut current_byte = byte_offset;
-        let mut current_bit = bit_in_byte;
-        let mut shift = 0;
+    for chunk in 0..(padded_dim / 16) {
+        let base = chunk * 12;
 
-        while remaining_bits > 0 {
-            let bits_in_current_byte = (8 - current_bit).min(remaining_bits);
-            let mask = ((1u16 << bits_in_current_byte) - 1) as u8;
-            let bits = ((packed_ex_code[current_byte] >> current_bit) & mask) as u16;
-            code |= bits << shift;
+        // Read lower 4 bits (8 bytes)
+        let compact4 = u64::from_le_bytes([
+            packed_ex_code[base],
+            packed_ex_code[base + 1],
+            packed_ex_code[base + 2],
+            packed_ex_code[base + 3],
+            packed_ex_code[base + 4],
+            packed_ex_code[base + 5],
+            packed_ex_code[base + 6],
+            packed_ex_code[base + 7],
+        ]);
 
-            shift += bits_in_current_byte;
-            remaining_bits -= bits_in_current_byte;
-            current_byte += 1;
-            current_bit = 0;
+        // Read upper 2 bits (4 bytes)
+        let compact2 = u32::from_le_bytes([
+            packed_ex_code[base + 8],
+            packed_ex_code[base + 9],
+            packed_ex_code[base + 10],
+            packed_ex_code[base + 11],
+        ]);
+
+        // Extract lower 4 bits for all 16 codes
+        let mut lower_4bits = [0u16; 16];
+        for i in 0..8 {
+            let byte_val = ((compact4 >> (i * 8)) & 0xFF) as u8;
+            // Even code (0,2,4,...,14) in lower nibble
+            lower_4bits[i] = (byte_val & 0x0F) as u16;
+            // Odd code (1,3,5,...,15) in upper nibble
+            lower_4bits[i + 8] = ((byte_val >> 4) & 0x0F) as u16;
         }
 
-        sum += (code as f32) * query[i];
+        // Extract upper 2 bits for all 16 codes (using 2-bit interleaved format)
+        let mut upper_2bits = [0u16; 16];
+        for i in 0..4 {
+            let byte_offset = i * 8;
+            upper_2bits[i] = ((compact2 >> byte_offset) & 0x3) as u16;
+            upper_2bits[i + 4] = ((compact2 >> (byte_offset + 2)) & 0x3) as u16;
+            upper_2bits[i + 8] = ((compact2 >> (byte_offset + 4)) & 0x3) as u16;
+            upper_2bits[i + 12] = ((compact2 >> (byte_offset + 6)) & 0x3) as u16;
+        }
+
+        // Combine and compute dot product
+        for i in 0..16 {
+            let code = (lower_4bits[i] | (upper_2bits[i] << 4)) as f32;
+            sum += code * query[code_idx + i];
+        }
+        code_idx += 16;
     }
     sum
 }
