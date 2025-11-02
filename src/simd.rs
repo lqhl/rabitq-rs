@@ -619,6 +619,7 @@ pub fn dot_u8_f32(a: &[u8], b: &[f32]) -> f32 {
 /// SIMD-accelerated dot product: u16 vector with f32 vector
 /// Converts u16 to f32 and computes dot product
 #[inline]
+#[allow(dead_code)]
 pub fn dot_u16_f32(a: &[u16], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
 
@@ -692,6 +693,7 @@ unsafe fn dot_u8_f32_avx2(a: &[u8], b: &[f32]) -> f32 {
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[target_feature(enable = "avx2")]
+#[allow(dead_code)]
 unsafe fn dot_u16_f32_avx2(a: &[u16], b: &[f32]) -> f32 {
     #[cfg(target_arch = "x86_64")]
     use std::arch::x86_64::*;
@@ -878,6 +880,62 @@ pub fn pack_codes(codes: &[u8], num_vectors: usize, dim_bytes: usize, packed: &m
     }
 }
 
+/// Unpack a single vector's binary code from FastScan batch layout
+/// Reverses the pack_codes operation for one vector
+///
+/// # Arguments
+/// * `packed_codes` - Packed binary codes for a batch (padded_dim * 32 / 8 bytes)
+/// * `vec_idx` - Index of vector within batch (0-31)
+/// * `dim_bytes` - Number of bytes per vector (padded_dim / 8)
+/// * `binary_code` - Output buffer for unpacked binary code (padded_dim elements, each 0 or 1)
+#[allow(dead_code)]
+pub fn unpack_single_vector(
+    packed_codes: &[u8],
+    vec_idx: usize,
+    dim_bytes: usize,
+    binary_code: &mut [u8],
+) {
+    assert!(vec_idx < FASTSCAN_BATCH_SIZE);
+    assert_eq!(binary_code.len(), dim_bytes * 8);
+    assert_eq!(packed_codes.len(), dim_bytes * FASTSCAN_BATCH_SIZE);
+
+    // Reverse KPERM0 permutation to find original position
+    let mut kperm0_inv = [0usize; FASTSCAN_BATCH_SIZE];
+    for (i, &perm_val) in KPERM0.iter().enumerate() {
+        kperm0_inv[perm_val] = i;
+        kperm0_inv[perm_val + 16] = i + 16;
+    }
+
+    let mut packed_offset = 0;
+
+    for col in 0..dim_bytes {
+        // Extract the packed data for this column
+        let mut col_0 = [0u8; FASTSCAN_BATCH_SIZE]; // upper 4 bits
+        let mut col_1 = [0u8; FASTSCAN_BATCH_SIZE]; // lower 4 bits
+
+        // Unpack according to KPERM0 permutation
+        for j in 0..16 {
+            let val0 = packed_codes[packed_offset + j];
+            let val1 = packed_codes[packed_offset + j + 16];
+
+            col_0[KPERM0[j]] = val0 & 15;
+            col_0[KPERM0[j] + 16] = val0 >> 4;
+            col_1[KPERM0[j]] = val1 & 15;
+            col_1[KPERM0[j] + 16] = val1 >> 4;
+        }
+
+        // Combine upper and lower 4 bits
+        let byte_val = (col_0[vec_idx] << 4) | col_1[vec_idx];
+
+        // Unpack bits into binary_code (each element is 0 or 1)
+        for bit in 0..8 {
+            binary_code[col * 8 + bit] = (byte_val >> (7 - bit)) & 1;
+        }
+
+        packed_offset += 32;
+    }
+}
+
 /// Accumulate distances for a batch of 32 vectors using FastScan
 /// Uses pre-computed lookup table (LUT) and SIMD shuffle for fast distance estimation
 /// Automatically dispatches to AVX-512, AVX2, or scalar implementation based on CPU features
@@ -954,24 +1012,9 @@ unsafe fn accumulate_batch_avx2_impl(
     let mut accu3 = _mm256_setzero_si256();
 
     // Process 64 bytes at a time (2 * 32) to match C++ implementation
+    // Let CPU hardware prefetcher handle memory prefetching automatically
     let mut i = 0;
     while i + 63 < code_length {
-        // Multi-level prefetching for optimal cache utilization
-        // L1 cache prefetch (short distance - next iteration)
-        if i + 128 < code_length {
-            _mm_prefetch(packed_codes.as_ptr().add(i + 128) as *const i8, _MM_HINT_T0);
-            _mm_prefetch(lut.as_ptr().add(i + 128), _MM_HINT_T0);
-        }
-        // L2 cache prefetch (medium distance)
-        if i + 256 < code_length {
-            _mm_prefetch(packed_codes.as_ptr().add(i + 256) as *const i8, _MM_HINT_T1);
-            _mm_prefetch(lut.as_ptr().add(i + 256), _MM_HINT_T1);
-        }
-        // L3 cache prefetch (long distance)
-        if i + 512 < code_length {
-            _mm_prefetch(packed_codes.as_ptr().add(i + 512) as *const i8, _MM_HINT_T2);
-        }
-
         // First 32 bytes
         let c = _mm256_loadu_si256(packed_codes.as_ptr().add(i) as *const __m256i);
         let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i) as *const __m256i);
@@ -1364,6 +1407,284 @@ fn accumulate_batch_scalar(
     }
 }
 
+// ============================================================================
+// Packed Ex-Code Dot Product Functions (C++-style, no unpacking)
+// ============================================================================
+// These functions compute inner products directly on packed ex-code data,
+// matching C++ implementation for maximum performance.
+// Reference: C++ space.hpp:268-598 (excode_ipimpl namespace)
+
+/// Inner product between f32 query and packed 2-bit ex_code (for 3-bit total RaBitQ)
+/// Reference: C++ ip16_fxu2_avx512
+///
+/// # Arguments
+/// * `query` - Query vector (f32, length must be padded_dim)
+/// * `packed_ex_code` - Packed 2-bit ex_code (padded_dim * 2 / 8 bytes)
+/// * `padded_dim` - Padded dimension (must be multiple of 16)
+#[inline]
+pub fn ip_packed_ex2_f32(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
+    debug_assert_eq!(query.len(), padded_dim);
+    debug_assert_eq!(packed_ex_code.len(), (padded_dim * 2 + 7) / 8);
+    debug_assert!(
+        padded_dim % 16 == 0,
+        "padded_dim must be multiple of 16 for 2-bit"
+    );
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe {
+        ip_packed_ex2_f32_avx2(query, packed_ex_code, padded_dim)
+    }
+
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    {
+        ip_packed_ex2_f32_scalar(query, packed_ex_code, padded_dim)
+    }
+}
+
+/// Inner product between f32 query and packed 6-bit ex_code (for 7-bit total RaBitQ)
+/// Reference: C++ ip16_fxu6_avx512
+///
+/// # Arguments
+/// * `query` - Query vector (f32, length must be padded_dim)
+/// * `packed_ex_code` - Packed 6-bit ex_code (padded_dim * 6 / 8 bytes)
+/// * `padded_dim` - Padded dimension (must be multiple of 16)
+#[inline]
+pub fn ip_packed_ex6_f32(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
+    debug_assert_eq!(query.len(), padded_dim);
+    debug_assert_eq!(packed_ex_code.len(), (padded_dim * 6 + 7) / 8);
+    debug_assert!(
+        padded_dim % 16 == 0,
+        "padded_dim must be multiple of 16 for 6-bit"
+    );
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe {
+        ip_packed_ex6_f32_avx2(query, packed_ex_code, padded_dim)
+    }
+
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    {
+        ip_packed_ex6_f32_scalar(query, packed_ex_code, padded_dim)
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Scalar implementations (portable fallback)
+// ----------------------------------------------------------------------------
+
+#[inline]
+#[allow(dead_code)]
+#[allow(clippy::needless_range_loop)]
+fn ip_packed_ex2_f32_scalar(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
+    // Unpack C++ compatible format and compute dot product
+    // Format: 16 codes packed into 4 bytes with interleaved layout
+    let mut sum = 0.0f32;
+    let mut code_idx = 0;
+
+    for chunk in 0..(padded_dim / 16) {
+        let base = chunk * 4;
+        // Read 4 bytes as u32 (little-endian)
+        let compact = u32::from_le_bytes([
+            packed_ex_code[base],
+            packed_ex_code[base + 1],
+            packed_ex_code[base + 2],
+            packed_ex_code[base + 3],
+        ]);
+
+        // Extract 16 codes using C++ format (interleaved 2-bit values)
+        for i in 0..4 {
+            let byte_offset = i * 8;
+            // Extract 4 codes from each of the 4 shifted versions
+            let c0 = ((compact >> byte_offset) & 0x3) as f32;
+            let c1 = ((compact >> (byte_offset + 2)) & 0x3) as f32;
+            let c2 = ((compact >> (byte_offset + 4)) & 0x3) as f32;
+            let c3 = ((compact >> (byte_offset + 6)) & 0x3) as f32;
+
+            sum += c0 * query[code_idx];
+            sum += c1 * query[code_idx + 4];
+            sum += c2 * query[code_idx + 8];
+            sum += c3 * query[code_idx + 12];
+            code_idx += 1;
+        }
+        code_idx += 12; // Move to next chunk
+    }
+    sum
+}
+
+#[inline]
+#[allow(dead_code)]
+#[allow(clippy::needless_range_loop)]
+fn ip_packed_ex6_f32_scalar(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
+    // Unpack C++ compatible 6-bit format and compute dot product
+    // Format: 16 codes packed into 12 bytes
+    // - First 8 bytes: lower 4 bits (interleaved: even codes in low nibble, odd in high)
+    // - Next 4 bytes: upper 2 bits (interleaved like 2-bit packing)
+    let mut sum = 0.0f32;
+    let mut code_idx = 0;
+
+    for chunk in 0..(padded_dim / 16) {
+        let base = chunk * 12;
+
+        // Read lower 4 bits (8 bytes)
+        let compact4 = u64::from_le_bytes([
+            packed_ex_code[base],
+            packed_ex_code[base + 1],
+            packed_ex_code[base + 2],
+            packed_ex_code[base + 3],
+            packed_ex_code[base + 4],
+            packed_ex_code[base + 5],
+            packed_ex_code[base + 6],
+            packed_ex_code[base + 7],
+        ]);
+
+        // Read upper 2 bits (4 bytes)
+        let compact2 = u32::from_le_bytes([
+            packed_ex_code[base + 8],
+            packed_ex_code[base + 9],
+            packed_ex_code[base + 10],
+            packed_ex_code[base + 11],
+        ]);
+
+        // Extract lower 4 bits for all 16 codes
+        let mut lower_4bits = [0u16; 16];
+        for i in 0..8 {
+            let byte_val = ((compact4 >> (i * 8)) & 0xFF) as u8;
+            // Even code (0,2,4,...,14) in lower nibble
+            lower_4bits[i] = (byte_val & 0x0F) as u16;
+            // Odd code (1,3,5,...,15) in upper nibble
+            lower_4bits[i + 8] = ((byte_val >> 4) & 0x0F) as u16;
+        }
+
+        // Extract upper 2 bits for all 16 codes (using 2-bit interleaved format)
+        let mut upper_2bits = [0u16; 16];
+        for i in 0..4 {
+            let byte_offset = i * 8;
+            upper_2bits[i] = ((compact2 >> byte_offset) & 0x3) as u16;
+            upper_2bits[i + 4] = ((compact2 >> (byte_offset + 2)) & 0x3) as u16;
+            upper_2bits[i + 8] = ((compact2 >> (byte_offset + 4)) & 0x3) as u16;
+            upper_2bits[i + 12] = ((compact2 >> (byte_offset + 6)) & 0x3) as u16;
+        }
+
+        // Combine and compute dot product
+        for i in 0..16 {
+            let code = (lower_4bits[i] | (upper_2bits[i] << 4)) as f32;
+            sum += code * query[code_idx + i];
+        }
+        code_idx += 16;
+    }
+    sum
+}
+
+// ----------------------------------------------------------------------------
+// AVX2 implementations (optimized)
+// ----------------------------------------------------------------------------
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn ip_packed_ex2_f32_avx2(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
+    use std::arch::x86_64::*;
+
+    let mut sum = _mm256_setzero_ps();
+    let mask = _mm_set1_epi8(0b00000011); // Mask for extracting 2 bits
+
+    // Process 16 elements at a time (16 * 2 bits = 32 bits = 4 bytes)
+    let mut query_ptr = query.as_ptr();
+    let mut code_ptr = packed_ex_code.as_ptr();
+
+    for _ in 0..(padded_dim / 16) {
+        // Load 4 bytes of packed 2-bit codes (16 elements in C++ compatible format)
+        let compact = std::ptr::read_unaligned(code_ptr as *const i32);
+
+        // C++ format: Extract using shifts and masks
+        // _mm_set_epi32 creates [d, c, b, a] where a is at lowest address
+        // compact >> 0: bits 0-31, compact >> 2: bits 2-33, etc.
+        let code_i32 = _mm_set_epi32(compact >> 6, compact >> 4, compact >> 2, compact);
+        let code_masked = _mm_and_si128(code_i32, mask);
+
+        // code_masked now contains 16 bytes, each with 2-bit value
+        // Bytes 0-3: codes 0,1,2,3 (from compact >> 0)
+        // Bytes 4-7: codes 4,5,6,7 (from compact >> 2)
+        // Bytes 8-11: codes 8,9,10,11 (from compact >> 4)
+        // Bytes 12-15: codes 12,13,14,15 (from compact >> 6)
+
+        // Extract lower 8 bytes (codes 0-7) and convert to f32
+        let code_f32_lo = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(code_masked));
+        let query_lo = _mm256_loadu_ps(query_ptr);
+        sum = _mm256_fmadd_ps(code_f32_lo, query_lo, sum);
+
+        // Extract upper 8 bytes (codes 8-15) and convert to f32
+        let code_masked_hi = _mm_unpackhi_epi64(code_masked, code_masked); // Get high 8 bytes
+        let code_f32_hi = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(code_masked_hi));
+        let query_hi = _mm256_loadu_ps(query_ptr.add(8));
+        sum = _mm256_fmadd_ps(code_f32_hi, query_hi, sum);
+
+        query_ptr = query_ptr.add(16);
+        code_ptr = code_ptr.add(4);
+    }
+
+    // Horizontal sum
+    let sum_hi = _mm256_extractf128_ps(sum, 1);
+    let sum_lo = _mm256_castps256_ps128(sum);
+    let sum_128 = _mm_add_ps(sum_lo, sum_hi);
+    let sum_64 = _mm_add_ps(sum_128, _mm_movehl_ps(sum_128, sum_128));
+    let sum_32 = _mm_add_ss(sum_64, _mm_shuffle_ps(sum_64, sum_64, 0x55));
+    _mm_cvtss_f32(sum_32)
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn ip_packed_ex6_f32_avx2(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
+    use std::arch::x86_64::*;
+
+    let mut sum = _mm256_setzero_ps();
+    const MASK_4: i64 = 0x0f0f0f0f0f0f0f0f;
+    let mask_2 = _mm_set1_epi8(0b00110000);
+
+    // Process 16 elements at a time (16 * 6 bits = 96 bits = 12 bytes)
+    let mut query_ptr = query.as_ptr();
+    let mut code_ptr = packed_ex_code.as_ptr();
+
+    for _ in 0..(padded_dim / 16) {
+        // Load 8 bytes containing lower 4 bits of each code
+        let compact4 = std::ptr::read_unaligned(code_ptr as *const i64);
+        let code4_0 = compact4 & MASK_4;
+        let code4_1 = (compact4 >> 4) & MASK_4;
+        let c4 = _mm_set_epi64x(code4_1, code4_0); // lower 4 bits
+
+        code_ptr = code_ptr.add(8);
+
+        // Load 4 bytes containing upper 2 bits of each code
+        let compact2 = std::ptr::read_unaligned(code_ptr as *const i32);
+        let c2 = _mm_set_epi32(compact2 >> 2, compact2, compact2 << 2, compact2 << 4);
+        let c2_masked = _mm_and_si128(c2, mask_2);
+
+        // Combine: 6-bit code = (upper 2 bits) | (lower 4 bits)
+        let c6 = _mm_or_si128(c2_masked, c4);
+
+        // Convert first 8 codes to f32
+        let code_f32_lo = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(c6));
+        let query_lo = _mm256_loadu_ps(query_ptr);
+        sum = _mm256_fmadd_ps(code_f32_lo, query_lo, sum);
+
+        // Convert next 8 codes to f32
+        let c6_hi = _mm_unpackhi_epi64(c6, c6); // Shift to get high 8 bytes
+        let code_f32_hi = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(c6_hi));
+        let query_hi = _mm256_loadu_ps(query_ptr.add(8));
+        sum = _mm256_fmadd_ps(code_f32_hi, query_hi, sum);
+
+        query_ptr = query_ptr.add(16);
+        code_ptr = code_ptr.add(4); // Total 12 bytes per 16 elements
+    }
+
+    // Horizontal sum
+    let sum_hi = _mm256_extractf128_ps(sum, 1);
+    let sum_lo = _mm256_castps256_ps128(sum);
+    let sum_128 = _mm_add_ps(sum_lo, sum_hi);
+    let sum_64 = _mm_add_ps(sum_128, _mm_movehl_ps(sum_128, sum_128));
+    let sum_32 = _mm_add_ss(sum_64, _mm_shuffle_ps(sum_64, sum_64, 0x55));
+    _mm_cvtss_f32(sum_32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1405,5 +1726,957 @@ mod tests {
         unpack_ex_code(&packed, &mut unpacked, dim, 4);
 
         assert_eq!(ex_code, unpacked);
+    }
+
+    #[test]
+    fn test_ip_packed_ex2_vs_unpacked() {
+        let padded_dim = 960; // GIST dimension
+
+        // Create test ex_code (2-bit values: 0-3)
+        let ex_code: Vec<u16> = (0..padded_dim).map(|i| (i % 4) as u16).collect();
+
+        // Create test query
+        let query: Vec<f32> = (0..padded_dim).map(|i| (i as f32) * 0.01).collect();
+
+        // Pack ex_code using C++-compatible format
+        let mut packed = vec![0u8; padded_dim / 16 * 4];
+        pack_ex_code_2bit_cpp_compat(&ex_code, &mut packed, padded_dim);
+
+        // Method 1: Packed dot product (new)
+        let result_packed = ip_packed_ex2_f32(&query, &packed, padded_dim);
+
+        // Method 2: Unpacked dot product (reference)
+        let result_unpacked = dot_u16_f32(&ex_code, &query);
+
+        println!("Packed result:   {}", result_packed);
+        println!("Unpacked result: {}", result_unpacked);
+        println!(
+            "Difference:      {}",
+            (result_packed - result_unpacked).abs()
+        );
+
+        // Allow for floating point precision differences (especially with 6-bit packing)
+        assert!(
+            (result_packed - result_unpacked).abs() < 0.1,
+            "Packed and unpacked results differ: {} vs {}",
+            result_packed,
+            result_unpacked
+        );
+    }
+
+    #[test]
+    fn test_ip_packed_ex6_vs_unpacked() {
+        let padded_dim = 960; // GIST dimension
+
+        // Create test ex_code (6-bit values: 0-63)
+        let ex_code: Vec<u16> = (0..padded_dim).map(|i| (i % 64) as u16).collect();
+
+        // Create test query
+        let query: Vec<f32> = (0..padded_dim).map(|i| (i as f32) * 0.01).collect();
+
+        // Pack ex_code using C++-compatible format
+        let mut packed = vec![0u8; padded_dim / 16 * 12];
+        pack_ex_code_6bit_cpp_compat(&ex_code, &mut packed, padded_dim);
+
+        // Method 1: Packed dot product (new)
+        let result_packed = ip_packed_ex6_f32(&query, &packed, padded_dim);
+
+        // Method 2: Unpacked dot product (reference)
+        let result_unpacked = dot_u16_f32(&ex_code, &query);
+
+        println!("Packed result:   {}", result_packed);
+        println!("Unpacked result: {}", result_unpacked);
+        println!(
+            "Difference:      {}",
+            (result_packed - result_unpacked).abs()
+        );
+
+        // Allow for floating point precision differences (especially with 6-bit packing)
+        assert!(
+            (result_packed - result_unpacked).abs() < 0.1,
+            "Packed and unpacked results differ: {} vs {}",
+            result_packed,
+            result_unpacked
+        );
+    }
+}
+
+// ============================================================================
+// C++-Compatible Packing Functions (SIMD-Optimized Format)
+// ============================================================================
+// These functions implement the same packing format as C++ RaBitQ Library,
+// enabling direct SIMD operations on packed data without unpacking.
+// Reference: C++ pack_excode.hpp (rabitqlib::quant::rabitq_impl::ex_bits)
+
+/// Pack 1-bit ex-codes in C++-compatible format
+/// Reference: C++ pack_excode.hpp:13-30 (packing_1bit_excode)
+///
+/// Packs 16 1-bit codes into 2 bytes (uint16) with simple bit positions.
+/// - code[0] → bit 0
+/// - code[1] → bit 1
+/// - ...
+/// - code[15] → bit 15
+///
+/// This is the simplest packing format, used for binary-only RaBitQ (ex_bits=0).
+///
+/// # Arguments
+/// * `ex_code` - Input extended codes (u16 per element, only bit 0 used)
+/// * `packed` - Output buffer for packed data (dim / 16 * 2 bytes)
+/// * `dim` - Dimension (must be multiple of 16)
+///
+/// # Panics
+/// Panics if dim is not a multiple of 16
+pub fn pack_ex_code_1bit_cpp_compat(ex_code: &[u16], packed: &mut [u8], dim: usize) {
+    debug_assert_eq!(ex_code.len(), dim);
+    debug_assert_eq!(dim % 16, 0, "dim must be multiple of 16 for 1-bit");
+    debug_assert_eq!(packed.len(), dim / 16 * 2);
+
+    let mut ex_idx = 0;
+    let mut packed_idx = 0;
+
+    while ex_idx < dim {
+        // Pack 16 1-bit codes into uint16
+        let mut code: u16 = 0;
+        for i in 0..16 {
+            code |= (ex_code[ex_idx + i] & 0x1) << i;
+        }
+
+        // Write as 2 bytes (little-endian)
+        packed[packed_idx..packed_idx + 2].copy_from_slice(&code.to_le_bytes());
+
+        ex_idx += 16;
+        packed_idx += 2;
+    }
+}
+
+/// Unpack 1-bit ex-codes from C++-compatible format
+/// Reverse operation of pack_ex_code_1bit_cpp_compat
+///
+/// # Arguments
+/// * `packed` - Input packed data (dim / 16 * 2 bytes)
+/// * `ex_code` - Output buffer for unpacked codes (dim elements)
+/// * `dim` - Dimension (must be multiple of 16)
+#[allow(dead_code)]
+pub fn unpack_ex_code_1bit_cpp_compat(packed: &[u8], ex_code: &mut [u16], dim: usize) {
+    debug_assert_eq!(ex_code.len(), dim);
+    debug_assert_eq!(dim % 16, 0, "dim must be multiple of 16 for 1-bit");
+    debug_assert_eq!(packed.len(), dim / 16 * 2);
+
+    let mut ex_idx = 0;
+    let mut packed_idx = 0;
+
+    while ex_idx < dim {
+        // Read 2 bytes as u16 (little-endian)
+        let code = u16::from_le_bytes([packed[packed_idx], packed[packed_idx + 1]]);
+
+        // Extract 16 1-bit codes
+        for i in 0..16 {
+            ex_code[ex_idx + i] = (code >> i) & 0x1;
+        }
+
+        ex_idx += 16;
+        packed_idx += 2;
+    }
+}
+
+/// Pack 2-bit ex-codes in C++-compatible format
+/// Reference: C++ pack_excode.hpp:32-54 (packing_2bit_excode)
+///
+/// Packs 16 2-bit codes into 4 bytes (int32) with interleaved layout optimized for SIMD extraction.
+/// The packing uses a special bit arrangement where codes are interleaved across bytes:
+/// - byte 0: codes 0, 4, 8, 12 (each 2 bits)
+/// - byte 1: codes 1, 5, 9, 13
+/// - byte 2: codes 2, 6, 10, 14
+/// - byte 3: codes 3, 7, 11, 15
+///
+/// This layout allows efficient SIMD unpacking using shifts and masks.
+///
+/// # Arguments
+/// * `ex_code` - Input extended codes (u16 per element, only lower 2 bits used)
+/// * `packed` - Output buffer for packed data (dim / 16 * 4 bytes)
+/// * `dim` - Dimension (must be multiple of 16)
+///
+/// # Panics
+/// Panics if dim is not a multiple of 16
+pub fn pack_ex_code_2bit_cpp_compat(ex_code: &[u16], packed: &mut [u8], dim: usize) {
+    debug_assert_eq!(ex_code.len(), dim);
+    debug_assert_eq!(dim % 16, 0, "dim must be multiple of 16 for 2-bit");
+    debug_assert_eq!(packed.len(), dim / 16 * 4);
+
+    let mut ex_idx = 0;
+    let mut packed_idx = 0;
+
+    while ex_idx < dim {
+        // Load 16 codes (only lower 2 bits are used)
+        let codes: [u16; 16] = [
+            ex_code[ex_idx] & 0x3,
+            ex_code[ex_idx + 1] & 0x3,
+            ex_code[ex_idx + 2] & 0x3,
+            ex_code[ex_idx + 3] & 0x3,
+            ex_code[ex_idx + 4] & 0x3,
+            ex_code[ex_idx + 5] & 0x3,
+            ex_code[ex_idx + 6] & 0x3,
+            ex_code[ex_idx + 7] & 0x3,
+            ex_code[ex_idx + 8] & 0x3,
+            ex_code[ex_idx + 9] & 0x3,
+            ex_code[ex_idx + 10] & 0x3,
+            ex_code[ex_idx + 11] & 0x3,
+            ex_code[ex_idx + 12] & 0x3,
+            ex_code[ex_idx + 13] & 0x3,
+            ex_code[ex_idx + 14] & 0x3,
+            ex_code[ex_idx + 15] & 0x3,
+        ];
+
+        // Simulate C++ int32 loads by grouping 4 codes into u32
+        // In C++: int32_t code0 = *reinterpret_cast<const int32_t*>(o_raw);
+        // This reads 4 bytes where each byte's lower 2 bits contain a code
+        let code0: u32 = codes[0] as u32
+            | ((codes[1] as u32) << 8)
+            | ((codes[2] as u32) << 16)
+            | ((codes[3] as u32) << 24);
+        let code1: u32 = codes[4] as u32
+            | ((codes[5] as u32) << 8)
+            | ((codes[6] as u32) << 16)
+            | ((codes[7] as u32) << 24);
+        let code2: u32 = codes[8] as u32
+            | ((codes[9] as u32) << 8)
+            | ((codes[10] as u32) << 16)
+            | ((codes[11] as u32) << 24);
+        let code3: u32 = codes[12] as u32
+            | ((codes[13] as u32) << 8)
+            | ((codes[14] as u32) << 16)
+            | ((codes[15] as u32) << 24);
+
+        // Combine with C++ bit arrangement: compact = (code3 << 6) | (code2 << 4) | (code1 << 2) | code0
+        // This creates an interleaved pattern where:
+        // - bits 0-1, 8-9, 16-17, 24-25: from code0 (codes 0,1,2,3)
+        // - bits 2-3, 10-11, 18-19, 26-27: from code1 (codes 4,5,6,7)
+        // - bits 4-5, 12-13, 20-21, 28-29: from code2 (codes 8,9,10,11)
+        // - bits 6-7, 14-15, 22-23, 30-31: from code3 (codes 12,13,14,15)
+        let compact: u32 = (code3 << 6) | (code2 << 4) | (code1 << 2) | code0;
+
+        // Write as 4 bytes (little-endian)
+        packed[packed_idx..packed_idx + 4].copy_from_slice(&compact.to_le_bytes());
+
+        ex_idx += 16;
+        packed_idx += 4;
+    }
+}
+
+/// Unpack 2-bit ex-codes from C++-compatible format
+/// Reverse operation of pack_ex_code_2bit_cpp_compat
+///
+/// # Arguments
+/// * `packed` - Input packed data (dim / 16 * 4 bytes)
+/// * `ex_code` - Output buffer for unpacked codes (dim elements)
+/// * `dim` - Dimension (must be multiple of 16)
+#[allow(dead_code)]
+pub fn unpack_ex_code_2bit_cpp_compat(packed: &[u8], ex_code: &mut [u16], dim: usize) {
+    debug_assert_eq!(ex_code.len(), dim);
+    debug_assert_eq!(dim % 16, 0, "dim must be multiple of 16 for 2-bit");
+    debug_assert_eq!(packed.len(), dim / 16 * 4);
+
+    let mut ex_idx = 0;
+    let mut packed_idx = 0;
+
+    while ex_idx < dim {
+        // Read 4 bytes as u32 (little-endian)
+        let compact = u32::from_le_bytes([
+            packed[packed_idx],
+            packed[packed_idx + 1],
+            packed[packed_idx + 2],
+            packed[packed_idx + 3],
+        ]);
+
+        // Extract codes using the interleaved pattern
+        // Each byte contains 4 codes (2 bits each)
+        for i in 0..4 {
+            let byte_offset = i * 8;
+            // Extract 4 codes from this byte
+            ex_code[ex_idx + i] = ((compact >> byte_offset) & 0x3) as u16; // codes 0,1,2,3
+            ex_code[ex_idx + i + 4] = ((compact >> (byte_offset + 2)) & 0x3) as u16; // codes 4,5,6,7
+            ex_code[ex_idx + i + 8] = ((compact >> (byte_offset + 4)) & 0x3) as u16; // codes 8,9,10,11
+            ex_code[ex_idx + i + 12] = ((compact >> (byte_offset + 6)) & 0x3) as u16;
+            // codes 12,13,14,15
+        }
+
+        ex_idx += 16;
+        packed_idx += 4;
+    }
+}
+
+/// Pack 6-bit ex-codes in C++-compatible format
+/// Reference: C++ pack_excode.hpp:174-205 (packing_6bit_excode)
+///
+/// Packs 16 6-bit codes into 12 bytes by splitting each code into:
+/// - Lower 4 bits → packed into 8 bytes (similar to 4-bit packing)
+/// - Upper 2 bits → packed into 4 bytes (similar to 2-bit packing)
+///
+/// This split-packing strategy enables efficient SIMD extraction.
+///
+/// # Arguments
+/// * `ex_code` - Input extended codes (u16 per element, only lower 6 bits used)
+/// * `packed` - Output buffer for packed data (dim / 16 * 12 bytes)
+/// * `dim` - Dimension (must be multiple of 16)
+///
+/// # Panics
+/// Panics if dim is not a multiple of 16
+pub fn pack_ex_code_6bit_cpp_compat(ex_code: &[u16], packed: &mut [u8], dim: usize) {
+    debug_assert_eq!(ex_code.len(), dim);
+    debug_assert_eq!(dim % 16, 0, "dim must be multiple of 16 for 6-bit");
+    debug_assert_eq!(packed.len(), dim / 16 * 12);
+
+    const MASK_4: u64 = 0x0f0f0f0f0f0f0f0f; // Extract lower 4 bits from each byte
+    const MASK_2: u32 = 0x30303030; // Extract bits 4-5 from each byte (upper 2 bits of 6-bit code)
+
+    let mut ex_idx = 0;
+    let mut packed_idx = 0;
+
+    while ex_idx < dim {
+        // Extract the 16 codes
+        let codes: [u16; 16] = [
+            ex_code[ex_idx] & 0x3F,
+            ex_code[ex_idx + 1] & 0x3F,
+            ex_code[ex_idx + 2] & 0x3F,
+            ex_code[ex_idx + 3] & 0x3F,
+            ex_code[ex_idx + 4] & 0x3F,
+            ex_code[ex_idx + 5] & 0x3F,
+            ex_code[ex_idx + 6] & 0x3F,
+            ex_code[ex_idx + 7] & 0x3F,
+            ex_code[ex_idx + 8] & 0x3F,
+            ex_code[ex_idx + 9] & 0x3F,
+            ex_code[ex_idx + 10] & 0x3F,
+            ex_code[ex_idx + 11] & 0x3F,
+            ex_code[ex_idx + 12] & 0x3F,
+            ex_code[ex_idx + 13] & 0x3F,
+            ex_code[ex_idx + 14] & 0x3F,
+            ex_code[ex_idx + 15] & 0x3F,
+        ];
+
+        // ===== Part 1: Pack lower 4 bits (8 bytes) =====
+        // Simulate C++ int64 loads for codes 0-7 and 8-15
+        let code4_0: u64 = codes[0] as u64
+            | ((codes[1] as u64) << 8)
+            | ((codes[2] as u64) << 16)
+            | ((codes[3] as u64) << 24)
+            | ((codes[4] as u64) << 32)
+            | ((codes[5] as u64) << 40)
+            | ((codes[6] as u64) << 48)
+            | ((codes[7] as u64) << 56);
+
+        let code4_1: u64 = codes[8] as u64
+            | ((codes[9] as u64) << 8)
+            | ((codes[10] as u64) << 16)
+            | ((codes[11] as u64) << 24)
+            | ((codes[12] as u64) << 32)
+            | ((codes[13] as u64) << 40)
+            | ((codes[14] as u64) << 48)
+            | ((codes[15] as u64) << 56);
+
+        // Pack lower 4 bits: compact4 = ((code4_1 & MASK_4) << 4) | (code4_0 & MASK_4)
+        let compact4 = ((code4_1 & MASK_4) << 4) | (code4_0 & MASK_4);
+
+        // Write 8 bytes
+        packed[packed_idx..packed_idx + 8].copy_from_slice(&compact4.to_le_bytes());
+        packed_idx += 8;
+
+        // ===== Part 2: Pack upper 2 bits (4 bytes) =====
+        // These are bits 4-5 of each 6-bit code (at bit positions 4-5 in the byte)
+        let code2_0: u32 = codes[0] as u32
+            | ((codes[1] as u32) << 8)
+            | ((codes[2] as u32) << 16)
+            | ((codes[3] as u32) << 24);
+
+        let code2_1: u32 = codes[4] as u32
+            | ((codes[5] as u32) << 8)
+            | ((codes[6] as u32) << 16)
+            | ((codes[7] as u32) << 24);
+
+        let code2_2: u32 = codes[8] as u32
+            | ((codes[9] as u32) << 8)
+            | ((codes[10] as u32) << 16)
+            | ((codes[11] as u32) << 24);
+
+        let code2_3: u32 = codes[12] as u32
+            | ((codes[13] as u32) << 8)
+            | ((codes[14] as u32) << 16)
+            | ((codes[15] as u32) << 24);
+
+        // Pack upper 2 bits (bits 4-5):
+        // compact2 = ((code2_3 & MASK_2) << 2) | (code2_2 & MASK_2) | ((code2_1 & MASK_2) >> 2) | ((code2_0 & MASK_2) >> 4)
+        let compact2 = ((code2_3 & MASK_2) << 2)
+            | (code2_2 & MASK_2)
+            | ((code2_1 & MASK_2) >> 2)
+            | ((code2_0 & MASK_2) >> 4);
+
+        // Write 4 bytes
+        packed[packed_idx..packed_idx + 4].copy_from_slice(&compact2.to_le_bytes());
+        packed_idx += 4;
+
+        ex_idx += 16;
+    }
+}
+
+/// Unpack 6-bit ex-codes from C++-compatible format
+/// Reverse operation of pack_ex_code_6bit_cpp_compat
+///
+/// # Arguments
+/// * `packed` - Input packed data (dim / 16 * 12 bytes)
+/// * `ex_code` - Output buffer for unpacked codes (dim elements)
+/// * `dim` - Dimension (must be multiple of 16)
+#[allow(dead_code)]
+pub fn unpack_ex_code_6bit_cpp_compat(packed: &[u8], ex_code: &mut [u16], dim: usize) {
+    debug_assert_eq!(ex_code.len(), dim);
+    debug_assert_eq!(dim % 16, 0, "dim must be multiple of 16 for 6-bit");
+    debug_assert_eq!(packed.len(), dim / 16 * 12);
+
+    let mut ex_idx = 0;
+    let mut packed_idx = 0;
+
+    while ex_idx < dim {
+        // Read 8 bytes containing lower 4 bits
+        let compact4 = u64::from_le_bytes([
+            packed[packed_idx],
+            packed[packed_idx + 1],
+            packed[packed_idx + 2],
+            packed[packed_idx + 3],
+            packed[packed_idx + 4],
+            packed[packed_idx + 5],
+            packed[packed_idx + 6],
+            packed[packed_idx + 7],
+        ]);
+        packed_idx += 8;
+
+        // Read 4 bytes containing upper 2 bits
+        let compact2 = u32::from_le_bytes([
+            packed[packed_idx],
+            packed[packed_idx + 1],
+            packed[packed_idx + 2],
+            packed[packed_idx + 3],
+        ]);
+        packed_idx += 4;
+
+        // Extract lower 4 bits for all 16 codes
+        let mut lower_4bits = [0u16; 16];
+        for i in 0..8 {
+            let byte_offset = i * 8;
+            // Even codes (0, 2, 4, ..., 14) are in lower nibbles
+            lower_4bits[i] = ((compact4 >> byte_offset) & 0x0F) as u16;
+            // Odd codes (1, 3, 5, ..., 15) are in upper nibbles
+            lower_4bits[i + 8] = ((compact4 >> (byte_offset + 4)) & 0x0F) as u16;
+        }
+
+        // Extract upper 2 bits for all 16 codes
+        // The compact2 layout is identical to 2-bit packing (interleaved pattern)
+        let mut upper_2bits = [0u16; 16];
+        for i in 0..4 {
+            let byte_offset = i * 8;
+            // Extract 4 groups of 2-bit values from each byte
+            upper_2bits[i] = ((compact2 >> byte_offset) & 0x3) as u16; // codes 0,1,2,3
+            upper_2bits[i + 4] = ((compact2 >> (byte_offset + 2)) & 0x3) as u16; // codes 4,5,6,7
+            upper_2bits[i + 8] = ((compact2 >> (byte_offset + 4)) & 0x3) as u16; // codes 8,9,10,11
+            upper_2bits[i + 12] = ((compact2 >> (byte_offset + 6)) & 0x3) as u16;
+            // codes 12,13,14,15
+        }
+
+        // Combine lower 4 bits and upper 2 bits to form 6-bit codes
+        for i in 0..16 {
+            ex_code[ex_idx + i] = lower_4bits[i] | (upper_2bits[i] << 4);
+        }
+
+        ex_idx += 16;
+    }
+}
+
+#[cfg(test)]
+mod cpp_compat_tests {
+    use super::*;
+
+    // ===== 1-bit packing tests =====
+
+    #[test]
+    fn test_pack_unpack_1bit_roundtrip() {
+        // Test roundtrip: pack then unpack should recover original data
+        let dim = 32;
+        let ex_code: Vec<u16> = (0..dim).map(|i| (i % 2) as u16).collect();
+        let mut packed = vec![0u8; dim / 16 * 2];
+        let mut unpacked = vec![0u16; dim];
+
+        pack_ex_code_1bit_cpp_compat(&ex_code, &mut packed, dim);
+        unpack_ex_code_1bit_cpp_compat(&packed, &mut unpacked, dim);
+
+        assert_eq!(ex_code, unpacked, "1-bit roundtrip failed");
+    }
+
+    #[test]
+    fn test_pack_1bit_alternating_pattern() {
+        // Test alternating 0, 1, 0, 1, ... pattern
+        let dim = 16;
+        let ex_code: Vec<u16> = (0..dim).map(|i| (i % 2) as u16).collect();
+        let mut packed = vec![0u8; 2];
+
+        pack_ex_code_1bit_cpp_compat(&ex_code, &mut packed, dim);
+
+        // Pattern: 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1
+        // Bits: bit 0 = 0, bit 1 = 1, bit 2 = 0, bit 3 = 1, ...
+        // This gives: 0b1010101010101010 = 0xAAAA
+        let expected = 0xAAAAu16.to_le_bytes();
+        assert_eq!(
+            packed, expected,
+            "1-bit alternating pattern mismatch. Got {:02x?}, expected {:02x?}",
+            packed, expected
+        );
+    }
+
+    #[test]
+    fn test_pack_1bit_all_zeros() {
+        let dim = 16;
+        let ex_code = vec![0u16; dim];
+        let mut packed = vec![0u8; 2];
+
+        pack_ex_code_1bit_cpp_compat(&ex_code, &mut packed, dim);
+
+        assert_eq!(packed, [0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_pack_1bit_all_ones() {
+        let dim = 16;
+        let ex_code = vec![1u16; dim];
+        let mut packed = vec![0u8; 2];
+
+        pack_ex_code_1bit_cpp_compat(&ex_code, &mut packed, dim);
+
+        // All bits set = 0xFFFF
+        assert_eq!(packed, [0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn test_pack_1bit_specific_pattern() {
+        // Test specific bit pattern: first 8 are 1, last 8 are 0
+        let dim = 16;
+        let mut ex_code = vec![0u16; dim];
+        for item in ex_code.iter_mut().take(8) {
+            *item = 1;
+        }
+        let mut packed = vec![0u8; 2];
+
+        pack_ex_code_1bit_cpp_compat(&ex_code, &mut packed, dim);
+
+        // Bits 0-7 set, bits 8-15 clear = 0x00FF
+        let expected = 0x00FFu16.to_le_bytes();
+        assert_eq!(packed, expected);
+    }
+
+    #[test]
+    fn test_pack_1bit_large_dimension() {
+        // Test with GIST dimension (960)
+        let dim = 960;
+        let ex_code: Vec<u16> = (0..dim).map(|i| (i % 2) as u16).collect();
+        let mut packed = vec![0u8; dim / 16 * 2];
+        let mut unpacked = vec![0u16; dim];
+
+        pack_ex_code_1bit_cpp_compat(&ex_code, &mut packed, dim);
+        unpack_ex_code_1bit_cpp_compat(&packed, &mut unpacked, dim);
+
+        assert_eq!(ex_code, unpacked, "1-bit large dimension roundtrip failed");
+    }
+
+    // ===== 2-bit packing tests =====
+
+    #[test]
+    fn test_pack_unpack_2bit_roundtrip() {
+        // Test roundtrip: pack then unpack should recover original data
+        let dim = 32;
+        let ex_code: Vec<u16> = (0..dim).map(|i| (i % 4) as u16).collect();
+        let mut packed = vec![0u8; dim / 16 * 4];
+        let mut unpacked = vec![0u16; dim];
+
+        pack_ex_code_2bit_cpp_compat(&ex_code, &mut packed, dim);
+        unpack_ex_code_2bit_cpp_compat(&packed, &mut unpacked, dim);
+
+        assert_eq!(
+            ex_code, unpacked,
+            "Roundtrip failed: pack/unpack doesn't preserve data"
+        );
+    }
+
+    #[test]
+    fn test_pack_2bit_specific_pattern() {
+        // Test specific bit pattern to verify C++ compatibility
+        // Pattern: [0, 1, 2, 3, 0, 1, 2, 3, ...]
+        let dim = 16;
+        let ex_code: Vec<u16> = vec![0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3];
+        let mut packed = vec![0u8; 4];
+
+        pack_ex_code_2bit_cpp_compat(&ex_code, &mut packed, dim);
+
+        // Verify interleaved packing format
+        // According to C++ logic:
+        // code0 = 0 | (1<<8) | (2<<16) | (3<<24) = 0x03020100
+        // code1 = 0 | (1<<8) | (2<<16) | (3<<24) = 0x03020100
+        // code2 = 0 | (1<<8) | (2<<16) | (3<<24) = 0x03020100
+        // code3 = 0 | (1<<8) | (2<<16) | (3<<24) = 0x03020100
+        //
+        // compact = (code3 << 6) | (code2 << 4) | (code1 << 2) | code0
+        //
+        // Let's work through this:
+        // code0 = 0x03020100, lower 2 bits of each byte: 0x00, 0x01, 0x02, 0x03
+        //   bits 0-1: 0b00, bits 8-9: 0b01, bits 16-17: 0b10, bits 24-25: 0b11
+        //
+        // code1 << 2 (same pattern shifted by 2):
+        //   bits 2-3: 0b00, bits 10-11: 0b01, bits 18-19: 0b10, bits 26-27: 0b11
+        //
+        // code2 << 4:
+        //   bits 4-5: 0b00, bits 12-13: 0b01, bits 20-21: 0b10, bits 28-29: 0b11
+        //
+        // code3 << 6:
+        //   bits 6-7: 0b00, bits 14-15: 0b01, bits 22-23: 0b10, bits 30-31: 0b11
+        //
+        // Combining:
+        // byte 0 (bits 0-7):   0b00_00_00_00 = 0x00
+        // byte 1 (bits 8-15):  0b01_01_01_01 = 0x55
+        // byte 2 (bits 16-23): 0b10_10_10_10 = 0xAA
+        // byte 3 (bits 24-31): 0b11_11_11_11 = 0xFF
+
+        let expected = [0x00, 0x55, 0xAA, 0xFF];
+        assert_eq!(
+            packed, expected,
+            "Packing format doesn't match expected C++ output. Got {:02x?}, expected {:02x?}",
+            packed, expected
+        );
+    }
+
+    #[test]
+    fn test_pack_2bit_all_zeros() {
+        let dim = 16;
+        let ex_code = vec![0u16; dim];
+        let mut packed = vec![0u8; 4];
+
+        pack_ex_code_2bit_cpp_compat(&ex_code, &mut packed, dim);
+
+        assert_eq!(packed, [0x00, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_pack_2bit_all_threes() {
+        let dim = 16;
+        let ex_code = vec![3u16; dim];
+        let mut packed = vec![0u8; 4];
+
+        pack_ex_code_2bit_cpp_compat(&ex_code, &mut packed, dim);
+
+        // All codes are 0b11, so every 2-bit position should be 0b11
+        // This gives 0xFF for all bytes
+        assert_eq!(packed, [0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn test_pack_2bit_large_dimension() {
+        // Test with realistic dimension (GIST: 960)
+        let dim = 960;
+        let ex_code: Vec<u16> = (0..dim).map(|i| (i % 4) as u16).collect();
+        let mut packed = vec![0u8; dim / 16 * 4];
+        let mut unpacked = vec![0u16; dim];
+
+        pack_ex_code_2bit_cpp_compat(&ex_code, &mut packed, dim);
+        unpack_ex_code_2bit_cpp_compat(&packed, &mut unpacked, dim);
+
+        assert_eq!(ex_code, unpacked, "Large dimension roundtrip failed");
+    }
+
+    #[test]
+    fn test_unpack_2bit_matches_manual_extraction() {
+        // Manually create a packed buffer and verify unpacking
+        let packed = [0b10010100u8, 0b11110000, 0x00, 0xFF];
+        let mut unpacked = vec![0u16; 16];
+
+        unpack_ex_code_2bit_cpp_compat(&packed, &mut unpacked, 16);
+
+        // Manually verify a few positions
+        // byte 0 = 0b10010100
+        //   bits 0-1: 0b00 -> code 0 = 0
+        //   bits 2-3: 0b01 -> code 4 = 1
+        //   bits 4-5: 0b01 -> code 8 = 1
+        //   bits 6-7: 0b10 -> code 12 = 2
+
+        assert_eq!(unpacked[0], 0, "Code 0 mismatch");
+        assert_eq!(unpacked[4], 1, "Code 4 mismatch");
+        assert_eq!(unpacked[8], 1, "Code 8 mismatch");
+        assert_eq!(unpacked[12], 2, "Code 12 mismatch");
+    }
+
+    #[test]
+    fn test_pack_6bit_roundtrip() {
+        // Test 6-bit packing roundtrip
+        let dim = 32;
+        let ex_code: Vec<u16> = (0..dim).map(|i| (i % 64) as u16).collect();
+        let mut packed = vec![0u8; dim / 16 * 12];
+        let mut unpacked = vec![0u16; dim];
+
+        pack_ex_code_6bit_cpp_compat(&ex_code, &mut packed, dim);
+        unpack_ex_code_6bit_cpp_compat(&packed, &mut unpacked, dim);
+
+        assert_eq!(ex_code, unpacked, "6-bit roundtrip failed");
+    }
+
+    #[test]
+    fn test_pack_6bit_specific_values() {
+        // Test specific 6-bit values
+        let dim = 16;
+        // Pattern: 0, 15, 31, 47, 63, 0, 15, 31, 47, 63, ...
+        let ex_code: Vec<u16> = vec![0, 15, 31, 47, 63, 0, 15, 31, 47, 63, 0, 15, 31, 47, 63, 0];
+        let mut packed = vec![0u8; 12];
+        let mut unpacked = vec![0u16; dim];
+
+        pack_ex_code_6bit_cpp_compat(&ex_code, &mut packed, dim);
+        unpack_ex_code_6bit_cpp_compat(&packed, &mut unpacked, dim);
+
+        assert_eq!(ex_code, unpacked, "6-bit specific values roundtrip failed");
+    }
+
+    #[test]
+    fn test_pack_6bit_all_zeros() {
+        let dim = 16;
+        let ex_code = vec![0u16; dim];
+        let mut packed = vec![0u8; 12];
+
+        pack_ex_code_6bit_cpp_compat(&ex_code, &mut packed, dim);
+
+        assert_eq!(packed, vec![0u8; 12]);
+    }
+
+    #[test]
+    fn test_pack_6bit_all_max() {
+        let dim = 16;
+        let ex_code = vec![63u16; dim]; // 0b111111 = max 6-bit value
+        let mut packed = vec![0u8; 12];
+
+        pack_ex_code_6bit_cpp_compat(&ex_code, &mut packed, dim);
+
+        // All bits should be set to 1
+        assert_eq!(packed, vec![0xFFu8; 12]);
+    }
+
+    #[test]
+    fn test_pack_6bit_large_dimension() {
+        // Test with GIST dimension (960)
+        let dim = 960;
+        let ex_code: Vec<u16> = (0..dim).map(|i| (i % 64) as u16).collect();
+        let mut packed = vec![0u8; dim / 16 * 12];
+        let mut unpacked = vec![0u16; dim];
+
+        pack_ex_code_6bit_cpp_compat(&ex_code, &mut packed, dim);
+        unpack_ex_code_6bit_cpp_compat(&packed, &mut unpacked, dim);
+
+        assert_eq!(ex_code, unpacked, "6-bit large dimension roundtrip failed");
+    }
+
+    // ===== SIMD dot product tests with C++ packing =====
+
+    #[test]
+    fn test_simd_2bit_simple_debug() {
+        // Simple test with 16 elements to debug
+        let dim = 16;
+        let ex_code: Vec<u16> = vec![0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3];
+        let query: Vec<f32> = vec![1.0; 16];
+
+        // Pack using C++ compatible format
+        let mut packed = vec![0u8; 4];
+        pack_ex_code_2bit_cpp_compat(&ex_code, &mut packed, dim);
+
+        println!("Packed bytes: {:02x?}", packed);
+
+        // Unpack to verify
+        let mut unpacked = vec![0u16; 16];
+        unpack_ex_code_2bit_cpp_compat(&packed, &mut unpacked, dim);
+        println!("Unpacked: {:?}", unpacked);
+        println!("Original: {:?}", ex_code);
+
+        // Method 1: SIMD dot product
+        let result_simd = ip_packed_ex2_f32(&query, &packed, dim);
+
+        // Method 2: Reference
+        let result_ref = dot_u16_f32(&ex_code, &query);
+
+        println!("SIMD result:      {}", result_simd);
+        println!("Reference result: {}", result_ref);
+
+        assert_eq!(unpacked, ex_code, "Unpack doesn't match original");
+        assert!((result_simd - result_ref).abs() < 0.01, "SIMD mismatch");
+    }
+
+    #[test]
+    fn test_simd_2bit_vs_reference() {
+        // Test that SIMD dot product with C++ packing matches reference
+        let dim = 960;
+        let ex_code: Vec<u16> = (0..dim).map(|i| (i % 4) as u16).collect();
+        let query: Vec<f32> = (0..dim).map(|i| (i as f32) * 0.01).collect();
+
+        // Pack using C++ compatible format
+        let mut packed = vec![0u8; dim / 16 * 4];
+        pack_ex_code_2bit_cpp_compat(&ex_code, &mut packed, dim);
+
+        // Method 1: SIMD dot product on packed data (using existing ip_packed_ex2_f32)
+        let result_simd = ip_packed_ex2_f32(&query, &packed, dim);
+
+        // Method 2: Reference (scalar dot product on unpacked data)
+        let result_ref = dot_u16_f32(&ex_code, &query);
+
+        println!("SIMD result:      {}", result_simd);
+        println!("Reference result: {}", result_ref);
+        println!("Difference:       {}", (result_simd - result_ref).abs());
+
+        assert!(
+            (result_simd - result_ref).abs() < 0.1,
+            "SIMD 2-bit result differs from reference: {} vs {}",
+            result_simd,
+            result_ref
+        );
+    }
+
+    #[test]
+    fn test_simd_6bit_vs_reference() {
+        // Test that SIMD dot product with C++ packing matches reference
+        let dim = 960;
+        let ex_code: Vec<u16> = (0..dim).map(|i| (i % 64) as u16).collect();
+        let query: Vec<f32> = (0..dim).map(|i| (i as f32) * 0.01).collect();
+
+        // Pack using C++ compatible format
+        let mut packed = vec![0u8; dim / 16 * 12];
+        pack_ex_code_6bit_cpp_compat(&ex_code, &mut packed, dim);
+
+        // Method 1: SIMD dot product on packed data (using existing ip_packed_ex6_f32)
+        let result_simd = ip_packed_ex6_f32(&query, &packed, dim);
+
+        // Method 2: Reference (scalar dot product on unpacked data)
+        let result_ref = dot_u16_f32(&ex_code, &query);
+
+        println!("SIMD result:      {}", result_simd);
+        println!("Reference result: {}", result_ref);
+        println!("Difference:       {}", (result_simd - result_ref).abs());
+
+        assert!(
+            (result_simd - result_ref).abs() < 0.1,
+            "SIMD 6-bit result differs from reference: {} vs {}",
+            result_simd,
+            result_ref
+        );
+    }
+}
+
+// ============================================================================
+// Phase 3: Function Dispatch System
+// ============================================================================
+
+/// Function pointer type for ex-code inner product computation on packed data
+///
+/// This function type represents optimized SIMD inner product functions that
+/// operate directly on C++-compatible packed ex-code data without unpacking.
+///
+/// # Arguments
+/// * `query: &[f32]` - Rotated query vector (padded_dim elements)
+/// * `packed_ex_code: &[u8]` - Packed ex-code data (C++-compatible format)
+/// * `padded_dim: usize` - Padded dimension (must be multiple of 16)
+///
+/// # Returns
+/// Inner product sum as f32
+pub type ExIpFunc = fn(&[f32], &[u8], usize) -> f32;
+
+/// Inner product function for ex_bits=0 (binary-only RaBitQ)
+///
+/// When ex_bits=0, all ex-codes are zero, so the dot product is always 0.0
+#[inline]
+pub fn ip_packed_ex0_f32(_query: &[f32], _packed_ex_code: &[u8], _padded_dim: usize) -> f32 {
+    0.0 // All ex-codes are zero when ex_bits=0
+}
+
+/// Select the appropriate ex-code inner product function based on ex_bits
+///
+/// This function returns a function pointer to the optimized SIMD inner product
+/// implementation for the specified ex_bits configuration. The returned function
+/// operates directly on C++-compatible packed data without unpacking overhead.
+///
+/// # Arguments
+/// * `ex_bits` - Number of extra bits (0, 2, or 6)
+///   - 0: Binary-only (1-bit total), returns constant 0.0
+///   - 2: 3-bit total RaBitQ, uses `ip_packed_ex2_f32`
+///   - 6: 7-bit total RaBitQ, uses `ip_packed_ex6_f32`
+///
+/// # Returns
+/// Function pointer to the appropriate SIMD inner product function
+///
+/// # Panics
+/// Panics if ex_bits is not 0, 2, or 6 (unsupported configurations)
+///
+/// # Example
+/// ```ignore
+/// use rabitq_rs::simd::{select_excode_ipfunc, pack_ex_code_2bit_cpp_compat};
+///
+/// let ex_bits = 2; // 3-bit total
+/// let ip_func = select_excode_ipfunc(ex_bits);
+///
+/// // Use function pointer for dot product on packed data
+/// let query = vec![1.0f32; 960];
+/// let ex_code = vec![1u16; 960];
+/// let mut packed = vec![0u8; 960 / 16 * 4];
+/// pack_ex_code_2bit_cpp_compat(&ex_code, &mut packed, 960);
+///
+/// let result = ip_func(&query, &packed, 960);
+/// assert!((result - 960.0).abs() < 1e-3);
+/// ```
+pub fn select_excode_ipfunc(ex_bits: usize) -> ExIpFunc {
+    match ex_bits {
+        0 => ip_packed_ex0_f32, // 1-bit total (binary only)
+        2 => ip_packed_ex2_f32, // 3-bit total
+        6 => ip_packed_ex6_f32, // 7-bit total
+        _ => panic!(
+            "Unsupported ex_bits: {}. Only 0 (1-bit total), 2 (3-bit total), and 6 (7-bit total) are supported.",
+            ex_bits
+        ),
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn test_select_excode_ipfunc_ex0() {
+        let ip_func = select_excode_ipfunc(0);
+        let query = vec![1.0f32; 960];
+        let packed = vec![0u8; 960 / 16 * 2];
+        let result = ip_func(&query, &packed, 960);
+        assert_eq!(result, 0.0, "ex_bits=0 should always return 0.0");
+    }
+
+    #[test]
+    fn test_select_excode_ipfunc_ex2() {
+        let ip_func = select_excode_ipfunc(2);
+        let query = vec![1.0f32; 960];
+        let ex_code = vec![2u16; 960];
+        let mut packed = vec![0u8; 960 / 16 * 4];
+        pack_ex_code_2bit_cpp_compat(&ex_code, &mut packed, 960);
+
+        let result = ip_func(&query, &packed, 960);
+        assert!((result - 1920.0).abs() < 1e-3, "ex_bits=2: 960 * 2 = 1920");
+    }
+
+    #[test]
+    fn test_select_excode_ipfunc_ex6() {
+        let ip_func = select_excode_ipfunc(6);
+        let query = vec![1.0f32; 960];
+        let ex_code = vec![10u16; 960];
+        let mut packed = vec![0u8; 960 / 16 * 12];
+        pack_ex_code_6bit_cpp_compat(&ex_code, &mut packed, 960);
+
+        let result = ip_func(&query, &packed, 960);
+        assert!((result - 9600.0).abs() < 1e-3, "ex_bits=6: 960 * 10 = 9600");
+    }
+
+    #[test]
+    #[should_panic(expected = "Unsupported ex_bits: 1")]
+    fn test_select_excode_ipfunc_unsupported() {
+        select_excode_ipfunc(1); // Should panic
     }
 }

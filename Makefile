@@ -1,5 +1,9 @@
 .PHONY: help build-python install-python test-python clean-python bench-local bench-docker lint format
 
+# NOTE: All builds automatically use optimizations from .cargo/config.toml:
+# - target-cpu=native (enables AVX2/AVX-512 based on CPU capabilities)
+# - llvm-args=--ffast-math (equivalent to C++ -ffast-math)
+
 help:
 	@echo "RaBitQ-RS Python Bindings - Available Commands"
 	@echo ""
@@ -23,10 +27,14 @@ help:
 	@echo "  make lint              - Run Rust linter"
 	@echo "  make format            - Format Rust code"
 	@echo ""
+	@echo "NOTE: All builds use optimizations from .cargo/config.toml (target-cpu=native + fast-math)"
+	@echo ""
 
 # Build Python package in development mode
+# Optimizations (target-cpu=native, fast-math) are automatically applied via .cargo/config.toml
 build-python:
 	@echo "Building Python package with ALL optimizations..."
+	@echo "  (target-cpu=native + fast-math from .cargo/config.toml)"
 	maturin develop --release --features python,avx512,huge_pages
 
 # Build Python package without AVX-512 (for compatibility)
@@ -40,8 +48,10 @@ build-python-avx512:
 	maturin develop --release --features python,avx512
 
 # Build wheel and install (with ALL optimizations)
+# Optimizations (target-cpu=native, fast-math) are automatically applied via .cargo/config.toml
 install-python:
 	@echo "Building wheel with ALL optimizations..."
+	@echo "  (target-cpu=native + fast-math from .cargo/config.toml)"
 	maturin build --release --features python,avx512,huge_pages
 	@echo "Installing wheel..."
 	pip install --force-reinstall target/wheels/rabitq_rs-*.whl
