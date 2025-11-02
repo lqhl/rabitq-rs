@@ -1430,7 +1430,17 @@ pub fn ip_packed_ex2_f32(query: &[f32], packed_ex_code: &[u8], padded_dim: usize
         "padded_dim must be multiple of 16 for 2-bit"
     );
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    // Prioritize AVX512 > AVX2 > Scalar
+    #[cfg(all(target_arch = "x86_64", feature = "avx512", target_feature = "avx512f"))]
+    unsafe {
+        ip_packed_ex2_f32_avx512(query, packed_ex_code, padded_dim)
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(all(feature = "avx512", target_feature = "avx512f"))
+    ))]
     unsafe {
         ip_packed_ex2_f32_avx2(query, packed_ex_code, padded_dim)
     }
@@ -1457,7 +1467,17 @@ pub fn ip_packed_ex6_f32(query: &[f32], packed_ex_code: &[u8], padded_dim: usize
         "padded_dim must be multiple of 16 for 6-bit"
     );
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    // Prioritize AVX512 > AVX2 > Scalar
+    #[cfg(all(target_arch = "x86_64", feature = "avx512", target_feature = "avx512f"))]
+    unsafe {
+        ip_packed_ex6_f32_avx512(query, packed_ex_code, padded_dim)
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(all(feature = "avx512", target_feature = "avx512f"))
+    ))]
     unsafe {
         ip_packed_ex6_f32_avx2(query, packed_ex_code, padded_dim)
     }
@@ -1581,6 +1601,7 @@ fn ip_packed_ex6_f32_scalar(query: &[f32], packed_ex_code: &[u8], padded_dim: us
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[target_feature(enable = "avx2")]
+#[allow(dead_code)]
 unsafe fn ip_packed_ex2_f32_avx2(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
     use std::arch::x86_64::*;
 
@@ -1633,6 +1654,7 @@ unsafe fn ip_packed_ex2_f32_avx2(query: &[f32], packed_ex_code: &[u8], padded_di
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[target_feature(enable = "avx2")]
+#[allow(dead_code)]
 unsafe fn ip_packed_ex6_f32_avx2(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
     use std::arch::x86_64::*;
 
@@ -1683,6 +1705,96 @@ unsafe fn ip_packed_ex6_f32_avx2(query: &[f32], packed_ex_code: &[u8], padded_di
     let sum_64 = _mm_add_ps(sum_128, _mm_movehl_ps(sum_128, sum_128));
     let sum_32 = _mm_add_ss(sum_64, _mm_shuffle_ps(sum_64, sum_64, 0x55));
     _mm_cvtss_f32(sum_32)
+}
+
+// ----------------------------------------------------------------------------
+// AVX512 implementations (highest performance)
+// ----------------------------------------------------------------------------
+
+/// AVX512 implementation of 2-bit ex-code inner product
+/// Reference: C++ ip16_fxu2_avx512 in space.hpp:293-316
+#[cfg(all(target_arch = "x86_64", feature = "avx512", target_feature = "avx512f"))]
+#[target_feature(enable = "avx512f")]
+unsafe fn ip_packed_ex2_f32_avx512(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
+    use std::arch::x86_64::*;
+
+    let mut sum = _mm512_setzero_ps();
+    let mask = _mm_set1_epi8(0b00000011); // Mask for extracting 2 bits
+
+    // Process 16 elements at a time (16 * 2 bits = 32 bits = 4 bytes)
+    let mut query_ptr = query.as_ptr();
+    let mut code_ptr = packed_ex_code.as_ptr();
+
+    for _ in 0..(padded_dim / 16) {
+        // Load 4 bytes of packed 2-bit codes (16 elements in C++ compatible format)
+        let compact = std::ptr::read_unaligned(code_ptr as *const i32);
+
+        // C++ format: Extract using shifts and masks
+        // _mm_set_epi32 creates [d, c, b, a] where a is at lowest address
+        // compact >> 0: bits 0-31, compact >> 2: bits 2-33, etc.
+        let code = _mm_set_epi32(compact >> 6, compact >> 4, compact >> 2, compact);
+        let code = _mm_and_si128(code, mask);
+
+        // Convert 16 bytes (each with 2-bit value) to 16 f32 values
+        let cf = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(code));
+
+        // Load 16 query values and compute FMA
+        let q = _mm512_loadu_ps(query_ptr);
+        sum = _mm512_fmadd_ps(cf, q, sum);
+
+        query_ptr = query_ptr.add(16);
+        code_ptr = code_ptr.add(4);
+    }
+
+    // Horizontal sum using AVX512 reduce
+    _mm512_reduce_add_ps(sum)
+}
+
+/// AVX512 implementation of 6-bit ex-code inner product
+/// Reference: C++ ip16_fxu6_avx512 in space.hpp:456-486
+#[cfg(all(target_arch = "x86_64", feature = "avx512", target_feature = "avx512f"))]
+#[target_feature(enable = "avx512f")]
+unsafe fn ip_packed_ex6_f32_avx512(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
+    use std::arch::x86_64::*;
+
+    let mut sum = _mm512_setzero_ps();
+    const MASK_4: i64 = 0x0f0f0f0f0f0f0f0f;
+    let mask_2 = _mm_set1_epi8(0b00110000);
+
+    // Process 16 elements at a time (16 * 6 bits = 96 bits = 12 bytes)
+    let mut query_ptr = query.as_ptr();
+    let mut code_ptr = packed_ex_code.as_ptr();
+
+    for _ in 0..(padded_dim / 16) {
+        // Load 8 bytes containing lower 4 bits of each code
+        let compact4 = std::ptr::read_unaligned(code_ptr as *const i64);
+        let code4_0 = compact4 & MASK_4;
+        let code4_1 = (compact4 >> 4) & MASK_4;
+        let c4 = _mm_set_epi64x(code4_1, code4_0); // lower 4 bits
+
+        code_ptr = code_ptr.add(8);
+
+        // Load 4 bytes containing upper 2 bits of each code
+        let compact2 = std::ptr::read_unaligned(code_ptr as *const i32);
+        let c2 = _mm_set_epi32(compact2 >> 2, compact2, compact2 << 2, compact2 << 4);
+        let c2 = _mm_and_si128(c2, mask_2);
+
+        // Combine: 6-bit code = (upper 2 bits) | (lower 4 bits)
+        let c6 = _mm_or_si128(c2, c4);
+
+        // Convert 16 bytes (each with 6-bit value) to 16 f32 values
+        let cf = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(c6));
+
+        // Load 16 query values and compute FMA
+        let q = _mm512_loadu_ps(query_ptr);
+        sum = _mm512_fmadd_ps(cf, q, sum);
+
+        query_ptr = query_ptr.add(16);
+        code_ptr = code_ptr.add(4); // Total 12 bytes per 16 elements
+    }
+
+    // Horizontal sum using AVX512 reduce
+    _mm512_reduce_add_ps(sum)
 }
 
 #[cfg(test)]
