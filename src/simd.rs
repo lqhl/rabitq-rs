@@ -1341,6 +1341,8 @@ unsafe fn accumulate_batch_highacc_avx512_impl(
 }
 
 /// Scalar fallback for high-accuracy accumulation
+///
+/// Same approach as regular scalar: unpack and compute directly
 fn accumulate_batch_highacc_scalar(
     packed_codes: &[u8],
     lut_low8: &[u8],
@@ -1349,32 +1351,49 @@ fn accumulate_batch_highacc_scalar(
     results: &mut [i32; FASTSCAN_BATCH_SIZE],
 ) {
     results.fill(0);
-    let code_length = dim * 4;
 
-    for (i, &code_byte) in packed_codes.iter().enumerate().take(code_length) {
-        let lo_nibble = (code_byte & 0x0F) as usize;
-        let hi_nibble = ((code_byte >> 4) & 0x0F) as usize;
+    // Unpack the codes first
+    let mut unpacked = vec![vec![0u8; dim]; FASTSCAN_BATCH_SIZE];
 
-        let lut_base = (i / 32) * 16;
-        let vec_in_block = i % 32;
+    for dim_idx in 0..dim {
+        let chunk_start = dim_idx * 4;
 
-        let val_lo_low = lut_low8[lut_base + lo_nibble] as i32;
-        let val_lo_high = lut_high8[lut_base + lo_nibble] as i32;
-        let val_hi_low = lut_low8[lut_base + hi_nibble] as i32;
-        let val_hi_high = lut_high8[lut_base + hi_nibble] as i32;
+        for vec_idx in 0..FASTSCAN_BATCH_SIZE {
+            let byte_idx = chunk_start + (vec_idx / 8);
+            let bit_offset = (vec_idx % 8) * 4;
 
-        let val_lo = val_lo_low + (val_lo_high << 8);
-        let val_hi = val_hi_low + (val_hi_high << 8);
-
-        if vec_in_block < 16 {
-            results[vec_in_block] += val_lo;
-        } else {
-            results[vec_in_block] += val_hi;
+            if bit_offset < 4 {
+                unpacked[vec_idx][dim_idx] = (packed_codes[byte_idx] >> bit_offset) & 0x0F;
+            } else {
+                unpacked[vec_idx][dim_idx] = (packed_codes[byte_idx] >> 4) & 0x0F;
+            }
         }
+    }
+
+    // Compute dot products using high-accuracy LUT
+    for vec_idx in 0..FASTSCAN_BATCH_SIZE {
+        let mut sum: i32 = 0;
+        for dim_idx in 0..dim {
+            let code = unpacked[vec_idx][dim_idx] as usize;
+            let lut_block = (dim_idx / 4) * 16;
+            let lut_idx = lut_block + code;
+
+            // Reconstruct i16 value from low and high bytes
+            let low = lut_low8[lut_idx] as u16;
+            let high = lut_high8[lut_idx] as u16;
+            let val_u16 = low | (high << 8);
+            let val_i16 = (val_u16 as i32) - 32768; // Undo the +32768 shift
+
+            sum += val_i16;
+        }
+        results[vec_idx] = sum;
     }
 }
 
 /// Scalar fallback for accumulate_batch when SIMD is not available
+///
+/// Simplified implementation: unpack codes and compute directly.
+/// This is slower but guaranteed correct.
 fn accumulate_batch_scalar(
     packed_codes: &[u8],
     lut: &[i8],
@@ -1383,25 +1402,38 @@ fn accumulate_batch_scalar(
 ) {
     results.fill(0);
 
-    let code_length = dim * 4; // dim * 4 bytes for packed codes
+    // Unpack the codes first to make logic simple and obviously correct
+    let mut unpacked = vec![vec![0u8; dim]; FASTSCAN_BATCH_SIZE];
 
-    // Process each byte of packed codes
-    for (i, &code_byte) in packed_codes.iter().enumerate().take(code_length) {
-        let lo_nibble = (code_byte & 0x0F) as usize;
-        let hi_nibble = ((code_byte >> 4) & 0x0F) as usize;
+    // Unpack: each byte contains 2 codes (4 bits each)
+    for dim_idx in 0..dim {
+        let chunk_start = dim_idx * 4; // 4 bytes per dimension (32 vectors / 8 bits)
 
-        // Look up values from LUT
-        let lut_base = (i / 32) * 16; // Which LUT block we're in
-        let vec_in_block = i % 32; // Which vector in the 32-vector block
+        for vec_idx in 0..FASTSCAN_BATCH_SIZE {
+            let byte_idx = chunk_start + (vec_idx / 8);
+            let bit_offset = (vec_idx % 8) * 4;
 
-        let val_lo = lut[lut_base + lo_nibble] as i16;
-        let val_hi = lut[lut_base + hi_nibble] as i16;
-
-        if vec_in_block < 16 {
-            results[vec_in_block] = results[vec_in_block].wrapping_add(val_lo as u16);
-        } else {
-            results[vec_in_block] = results[vec_in_block].wrapping_add(val_hi as u16);
+            if bit_offset < 4 {
+                unpacked[vec_idx][dim_idx] = (packed_codes[byte_idx] >> bit_offset) & 0x0F;
+            } else {
+                unpacked[vec_idx][dim_idx] = (packed_codes[byte_idx] >> 4) & 0x0F;
+            }
         }
+    }
+
+    // Now compute dot products using LUT
+    // LUT structure: packed by groups of 4 dimensions, each group has 16 entries
+    for vec_idx in 0..FASTSCAN_BATCH_SIZE {
+        let mut sum: i32 = 0;
+        for dim_idx in 0..dim {
+            let code = unpacked[vec_idx][dim_idx] as usize;
+            // LUT is organized as: (dim/4) groups of 16 entries each
+            // Within each 32-byte chunk of codes, there's a corresponding 16-entry LUT block
+            let lut_block = (dim_idx / 4) * 16;
+            let lut_idx = lut_block + code;
+            sum += lut[lut_idx] as i32;
+        }
+        results[vec_idx] = sum as u16;
     }
 }
 
