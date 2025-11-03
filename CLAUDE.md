@@ -5,19 +5,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Overview
 This is a pure-Rust implementation of the RaBitQ quantization scheme with IVF (Inverted File) search capabilities. The project mirrors the behavior of the C++ RaBitQ Library and provides tools to reproduce the GIST benchmark pipeline.
 
-## Performance Analysis & Optimization Plans
+## Performance Optimizations (DEFAULT ENABLED)
 
-**Current Status**: Rust achieves ~85% of C++ performance. Main bottleneck: ~15% overhead from unpacking ex-codes.
+**All builds automatically use aggressive CPU-specific optimizations** configured in `.cargo/config.toml`:
+- **target-cpu=native**: Auto-detects and uses AVX2/AVX-512 based on current CPU
+- **fast-math**: Equivalent to C++ `-ffast-math` (3-8% speedup)
+- **LTO**: Link-time optimization for cross-crate inlining
+- **codegen-units=1**: Monolithic compilation for better optimization
+
+These are automatically applied to:
+- `cargo build --release`
+- `make build-python` (Python bindings)
+- `make install-python`
+
+**Disabling optimizations**: Set `RUSTFLAGS=""` to build without CPU-specific optimizations (for compatibility).
+
+See `AVX512_FIX_SUMMARY.md` for AVX-512 configuration details and `PERFORMANCE_ANALYSIS.md` for performance comparison with C++.
+
+## Performance Analysis & Optimization Status
+
+**Current Status**: ✅ Rust has achieved algorithmic parity with C++ implementation!
+
+**Completed Optimizations** (Phase 1-3):
+- ✅ Phase 1: Unified batch memory layout (zero-copy access)
+- ✅ Phase 2: FastScan V2 with shuffle-based LUT
+- ✅ Phase 3: Direct SIMD operations on packed ex-codes (eliminated unpacking overhead)
+- ✅ C++-compatible packing formats for all bit widths (2-bit, 6-bit)
+- ✅ Aggressive compiler optimizations (target-cpu=native + fast-math)
+
+**Performance**: ~95-100% of C++ (remaining 0-5% gap from compiler differences)
 
 **Key Documents**:
-- `docs/PACKING_FORMAT_ANALYSIS.md` - Deep technical analysis of packing format differences
-- `docs/NEXT_SESSION_PROMPT.md` - Roadmap for rewriting packing system to match C++
-
-**Root Cause**: Incompatible ex-code packing formats prevent direct SIMD operations on packed data.
-- C++: Never unpacks, uses specialized SIMD functions operating directly on packed data
-- Rust: Must unpack ex-codes before dot product computation
-
-**Next Steps**: Rewrite Rust packing system to match C++ SIMD-optimized format (estimated 10-15 days).
+- `PERFORMANCE_ANALYSIS.md` - Detailed code-level comparison with C++ implementation
+- `OPTIMIZATION_CONFIG.md` - CPU optimization configuration and verification
 
 ## Key Commands
 
@@ -27,10 +47,12 @@ cargo fmt                                    # Format code (run before commits)
 cargo clippy --all-targets --all-features    # Lint (must pass cleanly)
 cargo test                                   # Run unit and integration tests
 
-# SIMD/AVX-512 builds (optional, for maximum performance)
-cargo build --release                        # Stable Rust, uses AVX2 (3-5x speedup)
-cargo +nightly build --release --features avx512  # Nightly, uses AVX-512 (6-10x speedup)
-cargo +nightly test --features avx512        # Test with AVX-512 enabled
+# Release builds (automatically use AVX2/AVX-512 based on CPU)
+cargo build --release                        # Auto-detects CPU features (AVX2/AVX-512)
+cargo test --release                         # Run tests with optimizations
+
+# Build without CPU-specific optimizations (for portability)
+RUSTFLAGS="" cargo build --release           # Generic x86_64 build
 ```
 
 ### Benchmark Evaluation (ivf_rabitq binary)

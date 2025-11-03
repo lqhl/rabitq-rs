@@ -47,7 +47,6 @@ crate-type = ["rlib", "cdylib"]
 [features]
 default = []
 python = ["pyo3", "numpy"]
-avx512 = []  # Enable native AVX-512 SIMD (requires nightly Rust)
 huge_pages = []  # Enable huge page memory support for better TLB efficiency
 
 [package.metadata.docs.rs]

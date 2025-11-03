@@ -957,7 +957,6 @@ pub fn accumulate_batch_avx2(
     #[cfg(target_arch = "x86_64")]
     {
         // Runtime CPU feature detection with fallback chain: AVX-512 -> AVX2 -> Scalar
-        #[cfg(feature = "avx512")]
         {
             if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
                 // Log once per process to avoid spam
@@ -1087,7 +1086,7 @@ unsafe fn accumulate_batch_avx2_impl(
 /// AVX-512 implementation for accumulate_batch
 /// Processes 64 bytes per iteration (double the AVX2 throughput)
 /// Requires AVX-512F and AVX-512BW CPU features
-#[cfg(feature = "avx512")]
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f", enable = "avx512bw")]
 unsafe fn accumulate_batch_avx512_impl(
     packed_codes: &[u8],
@@ -1173,7 +1172,6 @@ pub fn accumulate_batch_highacc_avx2(
     #[cfg(target_arch = "x86_64")]
     {
         // Runtime CPU feature detection
-        #[cfg(feature = "avx512")]
         {
             if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
                 unsafe {
@@ -1286,7 +1284,7 @@ unsafe fn accumulate_batch_highacc_avx2_impl(
     }
 }
 
-#[cfg(feature = "avx512")]
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f", enable = "avx512bw")]
 unsafe fn accumulate_batch_highacc_avx512_impl(
     packed_codes: &[u8],
@@ -1430,7 +1428,17 @@ pub fn ip_packed_ex2_f32(query: &[f32], packed_ex_code: &[u8], padded_dim: usize
         "padded_dim must be multiple of 16 for 2-bit"
     );
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    // Prioritize AVX512 > AVX2 > Scalar
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    unsafe {
+        ip_packed_ex2_f32_avx512(query, packed_ex_code, padded_dim)
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512f")
+    ))]
     unsafe {
         ip_packed_ex2_f32_avx2(query, packed_ex_code, padded_dim)
     }
@@ -1457,7 +1465,17 @@ pub fn ip_packed_ex6_f32(query: &[f32], packed_ex_code: &[u8], padded_dim: usize
         "padded_dim must be multiple of 16 for 6-bit"
     );
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    // Prioritize AVX512 > AVX2 > Scalar
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    unsafe {
+        ip_packed_ex6_f32_avx512(query, packed_ex_code, padded_dim)
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512f")
+    ))]
     unsafe {
         ip_packed_ex6_f32_avx2(query, packed_ex_code, padded_dim)
     }
@@ -1581,6 +1599,7 @@ fn ip_packed_ex6_f32_scalar(query: &[f32], packed_ex_code: &[u8], padded_dim: us
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[target_feature(enable = "avx2")]
+#[allow(dead_code)]
 unsafe fn ip_packed_ex2_f32_avx2(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
     use std::arch::x86_64::*;
 
@@ -1633,6 +1652,7 @@ unsafe fn ip_packed_ex2_f32_avx2(query: &[f32], packed_ex_code: &[u8], padded_di
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[target_feature(enable = "avx2")]
+#[allow(dead_code)]
 unsafe fn ip_packed_ex6_f32_avx2(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
     use std::arch::x86_64::*;
 
@@ -1683,6 +1703,373 @@ unsafe fn ip_packed_ex6_f32_avx2(query: &[f32], packed_ex_code: &[u8], padded_di
     let sum_64 = _mm_add_ps(sum_128, _mm_movehl_ps(sum_128, sum_128));
     let sum_32 = _mm_add_ss(sum_64, _mm_shuffle_ps(sum_64, sum_64, 0x55));
     _mm_cvtss_f32(sum_32)
+}
+
+// ----------------------------------------------------------------------------
+// AVX512 implementations (highest performance)
+// ----------------------------------------------------------------------------
+
+/// AVX512 implementation of 2-bit ex-code inner product
+/// Reference: C++ ip16_fxu2_avx512 in space.hpp:293-316
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[target_feature(enable = "avx512f")]
+unsafe fn ip_packed_ex2_f32_avx512(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
+    use std::arch::x86_64::*;
+
+    let mut sum = _mm512_setzero_ps();
+    let mask = _mm_set1_epi8(0b00000011); // Mask for extracting 2 bits
+
+    // Process 16 elements at a time (16 * 2 bits = 32 bits = 4 bytes)
+    let mut query_ptr = query.as_ptr();
+    let mut code_ptr = packed_ex_code.as_ptr();
+
+    for _ in 0..(padded_dim / 16) {
+        // Load 4 bytes of packed 2-bit codes (16 elements in C++ compatible format)
+        let compact = std::ptr::read_unaligned(code_ptr as *const i32);
+
+        // C++ format: Extract using shifts and masks
+        // _mm_set_epi32 creates [d, c, b, a] where a is at lowest address
+        // compact >> 0: bits 0-31, compact >> 2: bits 2-33, etc.
+        let code = _mm_set_epi32(compact >> 6, compact >> 4, compact >> 2, compact);
+        let code = _mm_and_si128(code, mask);
+
+        // Convert 16 bytes (each with 2-bit value) to 16 f32 values
+        let cf = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(code));
+
+        // Load 16 query values and compute FMA
+        let q = _mm512_loadu_ps(query_ptr);
+        sum = _mm512_fmadd_ps(cf, q, sum);
+
+        query_ptr = query_ptr.add(16);
+        code_ptr = code_ptr.add(4);
+    }
+
+    // Horizontal sum using AVX512 reduce
+    _mm512_reduce_add_ps(sum)
+}
+
+/// AVX512 implementation of 6-bit ex-code inner product
+/// Reference: C++ ip16_fxu6_avx512 in space.hpp:456-486
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[target_feature(enable = "avx512f")]
+unsafe fn ip_packed_ex6_f32_avx512(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
+    use std::arch::x86_64::*;
+
+    let mut sum = _mm512_setzero_ps();
+    const MASK_4: i64 = 0x0f0f0f0f0f0f0f0f;
+    let mask_2 = _mm_set1_epi8(0b00110000);
+
+    // Process 16 elements at a time (16 * 6 bits = 96 bits = 12 bytes)
+    let mut query_ptr = query.as_ptr();
+    let mut code_ptr = packed_ex_code.as_ptr();
+
+    for _ in 0..(padded_dim / 16) {
+        // Load 8 bytes containing lower 4 bits of each code
+        let compact4 = std::ptr::read_unaligned(code_ptr as *const i64);
+        let code4_0 = compact4 & MASK_4;
+        let code4_1 = (compact4 >> 4) & MASK_4;
+        let c4 = _mm_set_epi64x(code4_1, code4_0); // lower 4 bits
+
+        code_ptr = code_ptr.add(8);
+
+        // Load 4 bytes containing upper 2 bits of each code
+        let compact2 = std::ptr::read_unaligned(code_ptr as *const i32);
+        let c2 = _mm_set_epi32(compact2 >> 2, compact2, compact2 << 2, compact2 << 4);
+        let c2 = _mm_and_si128(c2, mask_2);
+
+        // Combine: 6-bit code = (upper 2 bits) | (lower 4 bits)
+        let c6 = _mm_or_si128(c2, c4);
+
+        // Convert 16 bytes (each with 6-bit value) to 16 f32 values
+        let cf = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(c6));
+
+        // Load 16 query values and compute FMA
+        let q = _mm512_loadu_ps(query_ptr);
+        sum = _mm512_fmadd_ps(cf, q, sum);
+
+        query_ptr = query_ptr.add(16);
+        code_ptr = code_ptr.add(4); // Total 12 bytes per 16 elements
+    }
+
+    // Horizontal sum using AVX512 reduce
+    _mm512_reduce_add_ps(sum)
+}
+
+// ----------------------------------------------------------------------------
+// Batch Distance Computation (Vectorized)
+// ----------------------------------------------------------------------------
+
+/// Compute batch distances in vectorized fashion (matching C++ Eigen performance)
+/// This replaces scalar loops with explicit SIMD operations
+///
+/// Computes:
+/// - ip_x0_qr[i] = delta * accu[i] + sum_vl
+/// - est_distance[i] = f_add[i] + g_add + f_rescale[i] * (ip_x0_qr[i] + k1x_sum_q)
+/// - lower_bound[i] = est_distance[i] - f_error[i] * g_error
+///
+/// Reference: C++ estimator.hpp:65-70 (Eigen vectorized operations)
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn compute_batch_distances_u16(
+    accu_res: &[u16; FASTSCAN_BATCH_SIZE],
+    lut_delta: f32,
+    lut_sum_vl: f32,
+    batch_f_add: &[f32],
+    batch_f_rescale: &[f32],
+    batch_f_error: &[f32],
+    g_add: f32,
+    g_error: f32,
+    k1x_sum_q: f32,
+    ip_x0_qr: &mut [f32; FASTSCAN_BATCH_SIZE],
+    est_distance: &mut [f32; FASTSCAN_BATCH_SIZE],
+    lower_bound: &mut [f32; FASTSCAN_BATCH_SIZE],
+) {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe {
+        compute_batch_distances_u16_avx2(
+            accu_res,
+            lut_delta,
+            lut_sum_vl,
+            batch_f_add,
+            batch_f_rescale,
+            batch_f_error,
+            g_add,
+            g_error,
+            k1x_sum_q,
+            ip_x0_qr,
+            est_distance,
+            lower_bound,
+        );
+    }
+
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    {
+        compute_batch_distances_u16_scalar(
+            accu_res,
+            lut_delta,
+            lut_sum_vl,
+            batch_f_add,
+            batch_f_rescale,
+            batch_f_error,
+            g_add,
+            g_error,
+            k1x_sum_q,
+            ip_x0_qr,
+            est_distance,
+            lower_bound,
+        );
+    }
+}
+
+/// Compute batch distances for i32 accumulators (high-accuracy mode)
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn compute_batch_distances_i32(
+    accu_res: &[i32; FASTSCAN_BATCH_SIZE],
+    lut_delta: f32,
+    lut_sum_vl: f32,
+    batch_f_add: &[f32],
+    batch_f_rescale: &[f32],
+    batch_f_error: &[f32],
+    g_add: f32,
+    g_error: f32,
+    k1x_sum_q: f32,
+    ip_x0_qr: &mut [f32; FASTSCAN_BATCH_SIZE],
+    est_distance: &mut [f32; FASTSCAN_BATCH_SIZE],
+    lower_bound: &mut [f32; FASTSCAN_BATCH_SIZE],
+) {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe {
+        compute_batch_distances_i32_avx2(
+            accu_res,
+            lut_delta,
+            lut_sum_vl,
+            batch_f_add,
+            batch_f_rescale,
+            batch_f_error,
+            g_add,
+            g_error,
+            k1x_sum_q,
+            ip_x0_qr,
+            est_distance,
+            lower_bound,
+        );
+    }
+
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    {
+        compute_batch_distances_i32_scalar(
+            accu_res,
+            lut_delta,
+            lut_sum_vl,
+            batch_f_add,
+            batch_f_rescale,
+            batch_f_error,
+            g_add,
+            g_error,
+            k1x_sum_q,
+            ip_x0_qr,
+            est_distance,
+            lower_bound,
+        );
+    }
+}
+
+// Scalar implementation (fallback)
+#[allow(dead_code, clippy::too_many_arguments)]
+fn compute_batch_distances_u16_scalar(
+    accu_res: &[u16; FASTSCAN_BATCH_SIZE],
+    lut_delta: f32,
+    lut_sum_vl: f32,
+    batch_f_add: &[f32],
+    batch_f_rescale: &[f32],
+    batch_f_error: &[f32],
+    g_add: f32,
+    g_error: f32,
+    k1x_sum_q: f32,
+    ip_x0_qr: &mut [f32; FASTSCAN_BATCH_SIZE],
+    est_distance: &mut [f32; FASTSCAN_BATCH_SIZE],
+    lower_bound: &mut [f32; FASTSCAN_BATCH_SIZE],
+) {
+    for i in 0..FASTSCAN_BATCH_SIZE {
+        let accu = accu_res[i] as f32;
+        ip_x0_qr[i] = lut_delta * accu + lut_sum_vl;
+        est_distance[i] = batch_f_add[i] + g_add + batch_f_rescale[i] * (ip_x0_qr[i] + k1x_sum_q);
+        lower_bound[i] = est_distance[i] - batch_f_error[i] * g_error;
+    }
+}
+
+#[allow(dead_code, clippy::too_many_arguments)]
+fn compute_batch_distances_i32_scalar(
+    accu_res: &[i32; FASTSCAN_BATCH_SIZE],
+    lut_delta: f32,
+    lut_sum_vl: f32,
+    batch_f_add: &[f32],
+    batch_f_rescale: &[f32],
+    batch_f_error: &[f32],
+    g_add: f32,
+    g_error: f32,
+    k1x_sum_q: f32,
+    ip_x0_qr: &mut [f32; FASTSCAN_BATCH_SIZE],
+    est_distance: &mut [f32; FASTSCAN_BATCH_SIZE],
+    lower_bound: &mut [f32; FASTSCAN_BATCH_SIZE],
+) {
+    for i in 0..FASTSCAN_BATCH_SIZE {
+        let accu = accu_res[i] as f32;
+        ip_x0_qr[i] = lut_delta * accu + lut_sum_vl;
+        est_distance[i] = batch_f_add[i] + g_add + batch_f_rescale[i] * (ip_x0_qr[i] + k1x_sum_q);
+        lower_bound[i] = est_distance[i] - batch_f_error[i] * g_error;
+    }
+}
+
+// AVX2 implementation (8 f32 per SIMD lane)
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn compute_batch_distances_u16_avx2(
+    accu_res: &[u16; FASTSCAN_BATCH_SIZE],
+    lut_delta: f32,
+    lut_sum_vl: f32,
+    batch_f_add: &[f32],
+    batch_f_rescale: &[f32],
+    batch_f_error: &[f32],
+    g_add: f32,
+    g_error: f32,
+    k1x_sum_q: f32,
+    ip_x0_qr: &mut [f32; FASTSCAN_BATCH_SIZE],
+    est_distance: &mut [f32; FASTSCAN_BATCH_SIZE],
+    lower_bound: &mut [f32; FASTSCAN_BATCH_SIZE],
+) {
+    use std::arch::x86_64::*;
+
+    let delta_vec = _mm256_set1_ps(lut_delta);
+    let sum_vl_vec = _mm256_set1_ps(lut_sum_vl);
+    let g_add_vec = _mm256_set1_ps(g_add);
+    let g_error_vec = _mm256_set1_ps(g_error);
+    let k1x_sum_q_vec = _mm256_set1_ps(k1x_sum_q);
+
+    // Process 32 elements in 4 iterations (8 f32 per iteration)
+    for i in (0..FASTSCAN_BATCH_SIZE).step_by(8) {
+        // Load u16 accumulators and convert to f32
+        let accu_u16 = _mm_loadu_si128(accu_res[i..].as_ptr() as *const __m128i);
+        let accu_i32 = _mm256_cvtepu16_epi32(accu_u16);
+        let accu_f32 = _mm256_cvtepi32_ps(accu_i32);
+
+        // ip_x0_qr = delta * accu + sum_vl
+        let ip_vec = _mm256_fmadd_ps(delta_vec, accu_f32, sum_vl_vec);
+        _mm256_storeu_ps(&mut ip_x0_qr[i], ip_vec);
+
+        // Load batch parameters
+        let f_add_vec = _mm256_loadu_ps(&batch_f_add[i]);
+        let f_rescale_vec = _mm256_loadu_ps(&batch_f_rescale[i]);
+        let f_error_vec = _mm256_loadu_ps(&batch_f_error[i]);
+
+        // est_distance = f_add + g_add + f_rescale * (ip_x0_qr + k1x_sum_q)
+        let ip_plus_k1x = _mm256_add_ps(ip_vec, k1x_sum_q_vec);
+        let rescale_term = _mm256_mul_ps(f_rescale_vec, ip_plus_k1x);
+        let est_vec = _mm256_add_ps(f_add_vec, g_add_vec);
+        let est_vec = _mm256_add_ps(est_vec, rescale_term);
+        _mm256_storeu_ps(&mut est_distance[i], est_vec);
+
+        // lower_bound = est_distance - f_error * g_error
+        let error_term = _mm256_mul_ps(f_error_vec, g_error_vec);
+        let lower_vec = _mm256_sub_ps(est_vec, error_term);
+        _mm256_storeu_ps(&mut lower_bound[i], lower_vec);
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn compute_batch_distances_i32_avx2(
+    accu_res: &[i32; FASTSCAN_BATCH_SIZE],
+    lut_delta: f32,
+    lut_sum_vl: f32,
+    batch_f_add: &[f32],
+    batch_f_rescale: &[f32],
+    batch_f_error: &[f32],
+    g_add: f32,
+    g_error: f32,
+    k1x_sum_q: f32,
+    ip_x0_qr: &mut [f32; FASTSCAN_BATCH_SIZE],
+    est_distance: &mut [f32; FASTSCAN_BATCH_SIZE],
+    lower_bound: &mut [f32; FASTSCAN_BATCH_SIZE],
+) {
+    use std::arch::x86_64::*;
+
+    let delta_vec = _mm256_set1_ps(lut_delta);
+    let sum_vl_vec = _mm256_set1_ps(lut_sum_vl);
+    let g_add_vec = _mm256_set1_ps(g_add);
+    let g_error_vec = _mm256_set1_ps(g_error);
+    let k1x_sum_q_vec = _mm256_set1_ps(k1x_sum_q);
+
+    // Process 32 elements in 4 iterations (8 f32 per iteration)
+    for i in (0..FASTSCAN_BATCH_SIZE).step_by(8) {
+        // Load i32 accumulators and convert to f32
+        let accu_i32 = _mm256_loadu_si256(accu_res[i..].as_ptr() as *const __m256i);
+        let accu_f32 = _mm256_cvtepi32_ps(accu_i32);
+
+        // ip_x0_qr = delta * accu + sum_vl
+        let ip_vec = _mm256_fmadd_ps(delta_vec, accu_f32, sum_vl_vec);
+        _mm256_storeu_ps(&mut ip_x0_qr[i], ip_vec);
+
+        // Load batch parameters
+        let f_add_vec = _mm256_loadu_ps(&batch_f_add[i]);
+        let f_rescale_vec = _mm256_loadu_ps(&batch_f_rescale[i]);
+        let f_error_vec = _mm256_loadu_ps(&batch_f_error[i]);
+
+        // est_distance = f_add + g_add + f_rescale * (ip_x0_qr + k1x_sum_q)
+        let ip_plus_k1x = _mm256_add_ps(ip_vec, k1x_sum_q_vec);
+        let rescale_term = _mm256_mul_ps(f_rescale_vec, ip_plus_k1x);
+        let est_vec = _mm256_add_ps(f_add_vec, g_add_vec);
+        let est_vec = _mm256_add_ps(est_vec, rescale_term);
+        _mm256_storeu_ps(&mut est_distance[i], est_vec);
+
+        // lower_bound = est_distance - f_error * g_error
+        let error_term = _mm256_mul_ps(f_error_vec, g_error_vec);
+        let lower_vec = _mm256_sub_ps(est_vec, error_term);
+        _mm256_storeu_ps(&mut lower_bound[i], lower_vec);
+    }
 }
 
 #[cfg(test)]

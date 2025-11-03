@@ -32,34 +32,31 @@ help:
 
 # Build Python package in development mode
 # Optimizations (target-cpu=native, fast-math) are automatically applied via .cargo/config.toml
+# AVX2/AVX-512 are auto-detected based on CPU capabilities
 build-python:
 	@echo "Building Python package with ALL optimizations..."
-	@echo "  (target-cpu=native + fast-math from .cargo/config.toml)"
-	maturin develop --release --features python,avx512,huge_pages
+	@echo "  (target-cpu=native + fast-math + auto AVX2/AVX-512 from .cargo/config.toml)"
+	maturin develop --release --features python,huge_pages
 
-# Build Python package without AVX-512 (for compatibility)
+# Build Python package without optimizations (for compatibility)
 build-python-compat:
-	@echo "Building Python package (without AVX-512)..."
-	maturin develop --release --features python
-
-# Build Python package with AVX-512 only (no huge pages)
-build-python-avx512:
-	@echo "Building Python package (AVX-512 only)..."
-	maturin develop --release --features python,avx512
+	@echo "Building Python package (without CPU-specific optimizations)..."
+	@RUSTFLAGS="" maturin develop --release --features python
 
 # Build wheel and install (with ALL optimizations)
 # Optimizations (target-cpu=native, fast-math) are automatically applied via .cargo/config.toml
+# AVX2/AVX-512 are auto-detected based on CPU capabilities
 install-python:
 	@echo "Building wheel with ALL optimizations..."
-	@echo "  (target-cpu=native + fast-math from .cargo/config.toml)"
-	maturin build --release --features python,avx512,huge_pages
+	@echo "  (target-cpu=native + fast-math + auto AVX2/AVX-512 from .cargo/config.toml)"
+	maturin build --release --features python,huge_pages
 	@echo "Installing wheel..."
 	pip install --force-reinstall target/wheels/rabitq_rs-*.whl
 
-# Build wheel and install (without AVX-512, for compatibility)
+# Build wheel and install (without CPU-specific optimizations, for compatibility)
 install-python-compat:
-	@echo "Building wheel (without AVX-512)..."
-	maturin build --release --features python
+	@echo "Building wheel (without CPU-specific optimizations)..."
+	@RUSTFLAGS="" maturin build --release --features python
 	@echo "Installing wheel..."
 	pip install --force-reinstall target/wheels/rabitq_rs-*.whl
 
