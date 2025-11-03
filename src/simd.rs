@@ -1807,6 +1807,7 @@ unsafe fn ip_packed_ex6_f32_avx512(query: &[f32], packed_ex_code: &[u8], padded_
 ///
 /// Reference: C++ estimator.hpp:65-70 (Eigen vectorized operations)
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub fn compute_batch_distances_u16(
     accu_res: &[u16; FASTSCAN_BATCH_SIZE],
     lut_delta: f32,
@@ -1860,6 +1861,7 @@ pub fn compute_batch_distances_u16(
 
 /// Compute batch distances for i32 accumulators (high-accuracy mode)
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub fn compute_batch_distances_i32(
     accu_res: &[i32; FASTSCAN_BATCH_SIZE],
     lut_delta: f32,
@@ -1912,6 +1914,7 @@ pub fn compute_batch_distances_i32(
 }
 
 // Scalar implementation (fallback)
+#[allow(dead_code, clippy::too_many_arguments)]
 fn compute_batch_distances_u16_scalar(
     accu_res: &[u16; FASTSCAN_BATCH_SIZE],
     lut_delta: f32,
@@ -1934,6 +1937,7 @@ fn compute_batch_distances_u16_scalar(
     }
 }
 
+#[allow(dead_code, clippy::too_many_arguments)]
 fn compute_batch_distances_i32_scalar(
     accu_res: &[i32; FASTSCAN_BATCH_SIZE],
     lut_delta: f32,
@@ -1959,6 +1963,7 @@ fn compute_batch_distances_i32_scalar(
 // AVX2 implementation (8 f32 per SIMD lane)
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
 unsafe fn compute_batch_distances_u16_avx2(
     accu_res: &[u16; FASTSCAN_BATCH_SIZE],
     lut_delta: f32,
@@ -2013,6 +2018,7 @@ unsafe fn compute_batch_distances_u16_avx2(
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
 unsafe fn compute_batch_distances_i32_avx2(
     accu_res: &[i32; FASTSCAN_BATCH_SIZE],
     lut_delta: f32,
