@@ -1086,6 +1086,7 @@ unsafe fn accumulate_batch_avx2_impl(
 /// AVX-512 implementation for accumulate_batch
 /// Processes 64 bytes per iteration (double the AVX2 throughput)
 /// Requires AVX-512F and AVX-512BW CPU features
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f", enable = "avx512bw")]
 unsafe fn accumulate_batch_avx512_impl(
     packed_codes: &[u8],
@@ -1283,6 +1284,7 @@ unsafe fn accumulate_batch_highacc_avx2_impl(
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f", enable = "avx512bw")]
 unsafe fn accumulate_batch_highacc_avx512_impl(
     packed_codes: &[u8],
