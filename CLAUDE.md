@@ -18,9 +18,9 @@ These are automatically applied to:
 - `make build-python` (Python bindings)
 - `make install-python`
 
-**Verification**: Run `./verify_optimizations.sh` to confirm all optimizations are active.
+**Disabling optimizations**: Set `RUSTFLAGS=""` to build without CPU-specific optimizations (for compatibility).
 
-See `OPTIMIZATION_CONFIG.md` for detailed configuration and `PERFORMANCE_ANALYSIS.md` for performance comparison with C++.
+See `AVX512_FIX_SUMMARY.md` for AVX-512 configuration details and `PERFORMANCE_ANALYSIS.md` for performance comparison with C++.
 
 ## Performance Analysis & Optimization Status
 
@@ -47,10 +47,12 @@ cargo fmt                                    # Format code (run before commits)
 cargo clippy --all-targets --all-features    # Lint (must pass cleanly)
 cargo test                                   # Run unit and integration tests
 
-# SIMD/AVX-512 builds (optional, for maximum performance)
-cargo build --release                        # Stable Rust, uses AVX2 (3-5x speedup)
-cargo +nightly build --release --features avx512  # Nightly, uses AVX-512 (6-10x speedup)
-cargo +nightly test --features avx512        # Test with AVX-512 enabled
+# Release builds (automatically use AVX2/AVX-512 based on CPU)
+cargo build --release                        # Auto-detects CPU features (AVX2/AVX-512)
+cargo test --release                         # Run tests with optimizations
+
+# Build without CPU-specific optimizations (for portability)
+RUSTFLAGS="" cargo build --release           # Generic x86_64 build
 ```
 
 ### Benchmark Evaluation (ivf_rabitq binary)

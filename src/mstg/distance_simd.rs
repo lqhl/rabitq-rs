@@ -23,8 +23,8 @@ pub fn estimate_distance_fast(
     #[cfg(target_arch = "x86_64")]
     {
         // Try AVX-512 first (best performance) - auto-detected at runtime
-        // Only available with nightly Rust and avx512 feature
-        #[cfg(feature = "avx512")]
+        // Automatically available when compiled with target-cpu=native on AVX-512 CPUs
+        #[cfg(target_feature = "avx512f")]
         {
             if is_x86_feature_detected!("avx512f") {
                 return unsafe { estimate_distance_avx512(ctx, centroid, quantized, metric) };
@@ -238,15 +238,14 @@ unsafe fn dot_avx2(a: &[f32], b: &[f32]) -> f32 {
 
 // ============================================================================
 // AVX-512 Implementation (512-bit SIMD) - Auto-detected at runtime
-// Note: Requires nightly Rust and avx512 feature flag
+// Note: Automatically compiled when using target-cpu=native on AVX-512 CPUs
 // ============================================================================
 
-#[cfg(feature = "avx512")]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 /// Compute dot product between f32 query and u8 binary code using AVX-512
 ///
 /// # Safety
 /// Requires AVX-512F support. Caller must check CPU features.
-#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn binary_u8_dot_f32_avx512(query: &[f32], binary_code: &[u8]) -> f32 {
     use std::arch::x86_64::*;
@@ -284,12 +283,11 @@ unsafe fn binary_u8_dot_f32_avx512(query: &[f32], binary_code: &[u8]) -> f32 {
     result
 }
 
-#[cfg(feature = "avx512")]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 /// Compute dot product between f32 query and u8 ex_code using AVX-512
 ///
 /// # Safety
 /// Requires AVX-512F support. Caller must check CPU features.
-#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn ex_u8_dot_f32_avx512(query: &[f32], ex_code: &[u8]) -> f32 {
     use std::arch::x86_64::*;
@@ -321,9 +319,8 @@ unsafe fn ex_u8_dot_f32_avx512(query: &[f32], ex_code: &[u8]) -> f32 {
     result
 }
 
-#[cfg(feature = "avx512")]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 /// L2 distance squared using AVX-512 with FMA
-#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn l2_distance_sqr_avx512(a: &[f32], b: &[f32]) -> f32 {
     use std::arch::x86_64::*;
@@ -352,9 +349,8 @@ unsafe fn l2_distance_sqr_avx512(a: &[f32], b: &[f32]) -> f32 {
     result
 }
 
-#[cfg(feature = "avx512")]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 /// Dot product using AVX-512 with FMA
-#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn dot_avx512(a: &[f32], b: &[f32]) -> f32 {
     use std::arch::x86_64::*;
@@ -380,8 +376,7 @@ unsafe fn dot_avx512(a: &[f32], b: &[f32]) -> f32 {
     result
 }
 
-#[cfg(feature = "avx512")]
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[target_feature(enable = "avx512f")]
 unsafe fn estimate_distance_avx512(
     ctx: &QueryContext,
