@@ -194,7 +194,7 @@ impl QueryContext {
 
 /// Batch data with unified memory layout for FastScan
 /// Layout: [binary_codes][f_add][f_rescale][f_error]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BatchData {
     /// Contiguous memory block for batch
     /// Layout per batch (32 vectors):
@@ -380,15 +380,17 @@ impl BatchData {
         let stride = Self::batch_stride(padded_dim);
         let batch_offset = batch_idx * stride;
         let binary_bytes = padded_dim * BATCH_SIZE / 8;
+        let dim_bytes = padded_dim / 8;
 
-        // Pack binary codes in FastScan layout (column-major for SIMD)
-        for vec_idx in 0..BATCH_SIZE {
-            let qvec = &batch_vectors[vec_idx];
-            for byte_idx in 0..qvec.binary_code_packed.len() {
-                let dst_offset = batch_offset + byte_idx * BATCH_SIZE + vec_idx;
-                batch_data[dst_offset] = qvec.binary_code_packed[byte_idx];
-            }
+        // Collect binary codes into flat buffer
+        let mut binary_codes_flat = Vec::with_capacity(BATCH_SIZE * dim_bytes);
+        for vec in batch_vectors.iter() {
+            binary_codes_flat.extend_from_slice(&vec.binary_code_packed);
         }
+
+        // Pack binary codes using FastScan layout (uses simd::pack_codes)
+        let packed_codes = &mut batch_data[batch_offset..batch_offset + binary_bytes];
+        crate::simd::pack_codes(&binary_codes_flat, BATCH_SIZE, dim_bytes, packed_codes);
 
         // Pack f_add, f_rescale, f_error as contiguous arrays
         let f_add_offset = batch_offset + binary_bytes;

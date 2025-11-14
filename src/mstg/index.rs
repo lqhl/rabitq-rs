@@ -177,17 +177,8 @@ impl MstgIndex {
                     return Vec::new();
                 }
 
-                // Try to use FastScan if batch data is available
-                if let Some(ref batch_data) = plist.batch_data {
-                    self.search_posting_list_fastscan(
-                        &query_ctx,
-                        plist,
-                        batch_data,
-                    )
-                } else {
-                    // Fallback to direct distance estimation
-                    self.search_posting_list_direct(&query_ctx, plist)
-                }
+                // Use FastScan batch distance computation
+                self.search_posting_list_fastscan(&query_ctx, plist, &plist.batch_data)
             })
             .collect();
 
@@ -315,37 +306,6 @@ impl MstgIndex {
         }
 
         results
-    }
-
-    /// Fallback: Search a posting list using direct distance estimation (non-batched)
-    #[inline]
-    fn search_posting_list_direct(
-        &self,
-        query_ctx: &crate::fastscan::QueryContext,
-        plist: &PostingList,
-    ) -> Vec<(u64, f32)> {
-        use crate::mstg::distance_simd::estimate_distance_fast;
-
-        // Create old-style QueryContext for direct estimation
-        let ctx = crate::mstg::distance::QueryContext::new(
-            &query_ctx.query,
-            plist.ex_bits(),
-        );
-
-        plist
-            .vectors
-            .iter()
-            .map(|qvec| {
-                let dist = estimate_distance_fast(
-                    &ctx,
-                    &plist.centroid,
-                    &qvec.quantized,
-                    self.config.metric,
-                );
-                (qvec.vector_id, dist)
-            })
-            .filter(|(_, dist)| dist.is_finite())
-            .collect()
     }
 
     /// Batch search for multiple queries (parallel)

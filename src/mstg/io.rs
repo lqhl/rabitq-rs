@@ -111,6 +111,17 @@ impl MstgIndex {
         // Load HNSW graph
         index.load_hnsw(&path_str)?;
 
+        // Fix padded_dim (it's #[serde(skip)] so it's 0 after deserialization)
+        for plist in &mut index.posting_lists {
+            plist.padded_dim = plist.centroid.len();
+        }
+
+        // Rebuild batch layouts for FastScan (batch_data is not serialized)
+        println!("Rebuilding FastScan batch layouts...");
+        for plist in &mut index.posting_lists {
+            plist.build_batch_layout();
+        }
+
         Ok(index)
     }
 

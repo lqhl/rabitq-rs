@@ -11,9 +11,9 @@ pub struct PostingList {
     pub rabitq_config: RabitqConfig,
     pub vectors: Vec<QuantizedVectorWithId>,
 
-    // FastScan batch layout (optional, built on demand)
+    // FastScan batch layout (always built)
     #[serde(skip)]
-    pub batch_data: Option<BatchData>,
+    pub batch_data: BatchData,
     #[serde(skip)]
     pub ex_codes_packed: Vec<Vec<u8>>,
     #[serde(skip)]
@@ -41,7 +41,10 @@ impl PostingList {
             size: 0,
             rabitq_config: RabitqConfig::default(),
             vectors: Vec::new(),
-            batch_data: None,
+            batch_data: BatchData {
+                data: Vec::new(),
+                padded_dim,
+            },
             ex_codes_packed: Vec::new(),
             f_add_ex: Vec::new(),
             f_rescale_ex: Vec::new(),
@@ -128,7 +131,7 @@ impl PostingList {
     }
 
     /// Build FastScan batch layout for efficient batch distance computation
-    /// This should be called after quantization is complete, before search
+    /// This must be called after quantization is complete, before search
     pub fn build_batch_layout(&mut self) {
         if self.vectors.is_empty() {
             return;
@@ -147,7 +150,7 @@ impl PostingList {
         let (batch_data, ex_codes, f_add_ex_vals, f_rescale_ex_vals) =
             BatchData::pack_batch(&quantized_vecs, self.padded_dim, ex_bits);
 
-        self.batch_data = Some(batch_data);
+        self.batch_data = batch_data;
         self.ex_codes_packed = ex_codes;
         self.f_add_ex = f_add_ex_vals;
         self.f_rescale_ex = f_rescale_ex_vals;
