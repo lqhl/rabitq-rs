@@ -1,3 +1,4 @@
+use crate::fastscan::BatchData;
 use crate::{quantizer, Metric, QuantizedVector, RabitqConfig};
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +10,18 @@ pub struct PostingList {
     pub size: u32,
     pub rabitq_config: RabitqConfig,
     pub vectors: Vec<QuantizedVectorWithId>,
+
+    // FastScan batch layout (optional, built on demand)
+    #[serde(skip)]
+    pub batch_data: Option<BatchData>,
+    #[serde(skip)]
+    pub ex_codes_packed: Vec<Vec<u8>>,
+    #[serde(skip)]
+    pub f_add_ex: Vec<f32>,
+    #[serde(skip)]
+    pub f_rescale_ex: Vec<f32>,
+    #[serde(skip)]
+    pub padded_dim: usize,
 }
 
 /// Quantized vector with its original ID
@@ -21,12 +34,18 @@ pub struct QuantizedVectorWithId {
 impl PostingList {
     /// Create a new empty posting list
     pub fn new(cluster_id: u32, centroid: Vec<f32>) -> Self {
+        let padded_dim = centroid.len();
         Self {
             cluster_id,
             centroid,
             size: 0,
             rabitq_config: RabitqConfig::default(),
             vectors: Vec::new(),
+            batch_data: None,
+            ex_codes_packed: Vec::new(),
+            f_add_ex: Vec::new(),
+            f_rescale_ex: Vec::new(),
+            padded_dim,
         }
     }
 
@@ -106,6 +125,42 @@ impl PostingList {
     /// Check if the posting list is empty
     pub fn is_empty(&self) -> bool {
         self.vectors.is_empty()
+    }
+
+    /// Build FastScan batch layout for efficient batch distance computation
+    /// This should be called after quantization is complete, before search
+    pub fn build_batch_layout(&mut self) {
+        if self.vectors.is_empty() {
+            return;
+        }
+
+        // Extract quantized vectors
+        let quantized_vecs: Vec<QuantizedVector> = self
+            .vectors
+            .iter()
+            .map(|v| v.quantized.clone())
+            .collect();
+
+        let ex_bits = self.rabitq_config.total_bits.saturating_sub(1);
+
+        // Pack into batch data
+        let (batch_data, ex_codes, f_add_ex_vals, f_rescale_ex_vals) =
+            BatchData::pack_batch(&quantized_vecs, self.padded_dim, ex_bits);
+
+        self.batch_data = Some(batch_data);
+        self.ex_codes_packed = ex_codes;
+        self.f_add_ex = f_add_ex_vals;
+        self.f_rescale_ex = f_rescale_ex_vals;
+    }
+
+    /// Get number of complete batches
+    pub fn num_complete_batches(&self) -> usize {
+        self.vectors.len() / crate::fastscan::BATCH_SIZE
+    }
+
+    /// Get number of remainder vectors
+    pub fn num_remainder_vectors(&self) -> usize {
+        self.vectors.len() % crate::fastscan::BATCH_SIZE
     }
 }
 
