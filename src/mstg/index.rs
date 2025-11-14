@@ -182,9 +182,25 @@ impl MstgIndex {
             })
             .collect();
 
-        // Step 5: Sort and return top-k
-        all_candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-        all_candidates.truncate(params.top_k);
+        // Step 5: Partial sort to get top-k (faster than full sort)
+        // Use select_nth_unstable to partition so smallest distances are at front
+        let k = params.top_k.min(all_candidates.len());
+        if k > 0 && k < all_candidates.len() {
+            // Partition: first k elements are the smallest distances
+            all_candidates.select_nth_unstable_by(k, |a, b| {
+                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            // Sort only the top-k elements
+            all_candidates[..k].sort_unstable_by(|a, b| {
+                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        } else {
+            // k >= len: sort all (fallback)
+            all_candidates.sort_unstable_by(|a, b| {
+                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+        all_candidates.truncate(k);
 
         all_candidates
             .into_iter()

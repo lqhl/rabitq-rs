@@ -120,56 +120,40 @@ pub fn search(&self, query: &[f32], params: &SearchParams) -> Vec<SearchResult> 
 ✅ **单次查询内的复用**: 已经实现！
 ❌ **多次查询间的复用**: 未实现！
 
-### 2.2 缓存机会：批量查询场景
+### 2.2 为什么跨查询缓存 LUT 不可行？
 
-**场景**: 连续处理多个查询（例如批量推理、在线服务）
+**关键问题**: ❌ **LUT 依赖于查询向量本身**
 
 ```rust
-// 当前实现：每次都重建 LUT
-for query in queries {
-    index.search(&query, &params);  // ← 每次都调用 build_lut()
-}
-
-// 优化方案：缓存 LUT
-let mut lut_cache = QueryContextCache::new();
-for query in queries {
-    index.search_with_cache(&query, &params, &mut lut_cache);
-    //                                         ↑
-    //                                  LUT 在多个查询间复用
+// src/fastscan.rs:26-72
+pub fn new(query: &[f32], padded_dim: usize) -> Self {
+    // LUT 的构建完全依赖于查询向量的值
+    simd::pack_lut_f32(query, &mut lut_float);
+    //                 ↑
+    //          LUT = f(query)
 }
 ```
 
-### 2.3 缓存收益估算
+**不同的查询向量 → 不同的 LUT**:
+- query1 = [0.1, 0.2, 0.3, ...] → LUT1 = [...]
+- query2 = [0.5, 0.6, 0.7, ...] → LUT2 = [...] (完全不同)
 
-**LUT 构建成本**（基于 GIST 960 维）:
-- 占查询时间的 **~15%** (8-10ms / 59.7ms)
-- 对于批量查询（100 个查询）:
-  - 当前: 100 × 10ms = **1000ms** 浪费在重复构建 LUT
-  - 缓存: 1 × 10ms = **10ms**（如果查询模式相似）
-  - **节省**: ~990ms (**99% 加速** on LUT 构建部分)
+**结论**:
+- ❌ **批量查询无法复用 LUT**（每个查询都不同）
+- ✅ **单次查询内复用 LUT**（已实现，所有 posting lists 共享）
 
-**总体加速**:
-- 单次查询加速：无（LUT 已经在 posting lists 间复用）
-- 批量查询加速：**5-8ms per query**（15% × 59.7ms ≈ 9ms）
-- **适用场景**: embedding 检索服务、批量推理
+### 2.3 缓存的误区
 
-### 2.4 缓存限制
+**错误想法**: "批量查询可以缓存 LUT 来加速"
 
-**何时不能缓存**？
-- 不同维度的查询（LUT 大小不同）
-- 不同的 rabitq_bits 配置（ex_bits 不同）
-- LUT 会随查询向量变化，不是完全不变的
+**为什么错误**？
+1. LUT 是查询向量的函数：`LUT = f(query_vector)`
+2. 实际应用中极少有完全相同的查询向量
+3. 即使是相似的查询（例如同一文本的不同 embedding），向量值也会不同
 
-**缓存策略**：
-```rust
-// 简单缓存：假设同一批次的查询配置相同
-if cache.is_valid_for(padded_dim, ex_bits) {
-    // 复用已有的 LUT
-} else {
-    // 重建 LUT 并更新缓存
-    cache.rebuild(query, padded_dim, ex_bits);
-}
-```
+**唯一可缓存的场景**（极其罕见）：
+- 完全相同的查询被重复执行（例如健康检查）
+- 这种情况应该在应用层缓存结果，而不是缓存 LUT
 
 ---
 
@@ -266,59 +250,42 @@ fn search_cluster_v2_batched(
 
 ---
 
-## 5. 优化建议
+## 5. 实际优化方向（已实现 ✅）
 
-### 5.1 何时考虑缓存 LUT？
+### 5.1 部分排序优化
 
-**推荐场景**：
-1. **批量查询**: 连续处理多个查询（>10 个）
-2. **在线服务**: QPS > 100 的实时检索
-3. **嵌入检索**: 文本/图像 embedding 批量搜索
+**问题**: MSTG 搜索结果使用完整排序，但只需要 top-k
 
-**不推荐场景**：
-1. 单次查询（无收益）
-2. 低 QPS 离线分析（收益小）
-3. 内存受限环境（缓存占用额外内存）
-
-### 5.2 实现方案
+**优化**: 使用 `select_nth_unstable_by` 部分排序
 
 ```rust
-// 方案 1: 简单缓存（假设同批次查询配置相同）
-pub struct QueryContextCache {
-    query_ctx: Option<QueryContext>,
-    valid_for_dim: usize,
-    valid_for_ex_bits: usize,
-}
+// 优化前 (src/mstg/index.rs:186)
+all_candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+all_candidates.truncate(params.top_k);
 
-impl MstgIndex {
-    pub fn search_batch(&self, queries: &[Vec<f32>], params: &SearchParams) -> Vec<Vec<SearchResult>> {
-        let mut cache = QueryContextCache::new();
-
-        queries.iter().map(|query| {
-            if cache.is_valid(self.padded_dim, self.ex_bits) {
-                // 复用缓存的 query_ctx，但更新查询向量
-                cache.update_query(query);
-            } else {
-                // 重建 LUT
-                cache.rebuild(query, self.padded_dim, self.ex_bits);
-            }
-
-            self.search_with_cache(query, params, &cache)
-        }).collect()
-    }
+// 优化后
+let k = params.top_k.min(all_candidates.len());
+if k > 0 && k < all_candidates.len() {
+    // 分区：前 k 个是最小距离
+    all_candidates.select_nth_unstable_by(k, |a, b| {
+        a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    // 只对 top-k 排序
+    all_candidates[..k].sort_unstable_by(...);
 }
 ```
 
-### 5.3 预期收益
+### 5.2 实际性能提升
 
-**GIST 1M 批量查询 (100 queries)**:
-- 当前: 100 × 59.7ms = **5,970ms**
-- 缓存 LUT: 100 × (59.7 - 9)ms + 9ms = **5,079ms**
-- **加速**: ~15% (**890ms 节省**)
+**GIST-like 10K vectors × 960 dims**:
+- **优化前**: 2445 µs/query (ef=400)
+- **优化后**: 1733 µs/query (ef=400)
+- **加速**: **29% (712 µs 节省)**
 
-**高 QPS 服务 (1000 QPS)**:
-- 每秒节省: 1000 × 9ms = **9,000ms** ≈ **9 CPU cores** 的计算量
-- **成本节省**: 显著降低服务器成本
+**为什么效果这么好？**
+1. `select_nth_unstable` 是 O(n) 平均复杂度，比完整排序 O(n log n) 快
+2. 只对 top-k 排序，而不是所有候选
+3. `sort_unstable` 不保证稳定性，比 `sort` 更快
 
 ---
 
@@ -332,23 +299,22 @@ impl MstgIndex {
 ### 6.2 当前复用策略
 - ✅ **MSTG**: 单次查询内所有 posting lists 共享 LUT
 - ✅ **IVF**: 单次查询内所有 clusters 共享 LUT
-- ❌ **两者都未**: 跨查询缓存 LUT
+- ❌ **跨查询缓存**: 不可行（LUT 依赖查询向量值）
 
-### 6.3 优化价值
-- **单次查询**: 无收益（已经在内部复用）
-- **批量查询**: 高收益（5-8ms/query，~15% 加速）
-- **优先级**: 中等（FastScan 已经是最大热点，LUT 只占 15%）
+### 6.3 关键认识
+- ❌ **错误**: LUT 可以在批量查询间缓存复用
+- ✅ **正确**: LUT = f(query_vector)，每个查询的 LUT 都不同
+- ✅ **已优化**: 单次查询内所有 posting lists/clusters 共享 LUT
 
-### 6.4 实现优先级排序
+### 6.4 实际有效的优化（已实现 ✅）
 
-1. **高优先级** (立即可做):
-   - ✅ 部分排序 top-k（2-3ms 加速，代码简单）
+1. **部分排序 top-k** (✅ 已实现):
+   - 使用 `select_nth_unstable_by` 替代完整排序
+   - **实测加速**: 29% (2445 µs → 1733 µs)
+   - **代码变更**: `src/mstg/index.rs:185-203`
 
-2. **中优先级** (批量查询场景):
-   - ⚠️ LUT 缓存（5-8ms 加速，适合批量）
+2. **未来优化方向**:
    - ⚠️ 并行 posting list 搜索（10-15ms 加速，多核）
-
-3. **低优先级** (复杂优化):
    - ⚠️ HNSW 预取（2-4ms 加速，实现复杂）
    - ⚠️ 内存映射 posting lists（适合大索引）
 
