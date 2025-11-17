@@ -1358,14 +1358,14 @@ fn accumulate_batch_highacc_scalar(
     for dim_idx in 0..dim {
         let chunk_start = dim_idx * 4;
 
-        for vec_idx in 0..FASTSCAN_BATCH_SIZE {
+        for (vec_idx, unpacked_vec) in unpacked.iter_mut().enumerate().take(FASTSCAN_BATCH_SIZE) {
             let byte_idx = chunk_start + (vec_idx / 8);
             let bit_offset = (vec_idx % 8) * 4;
 
             if bit_offset < 4 {
-                unpacked[vec_idx][dim_idx] = (packed_codes[byte_idx] >> bit_offset) & 0x0F;
+                unpacked_vec[dim_idx] = (packed_codes[byte_idx] >> bit_offset) & 0x0F;
             } else {
-                unpacked[vec_idx][dim_idx] = (packed_codes[byte_idx] >> 4) & 0x0F;
+                unpacked_vec[dim_idx] = (packed_codes[byte_idx] >> 4) & 0x0F;
             }
         }
     }
@@ -1409,14 +1409,14 @@ fn accumulate_batch_scalar(
     for dim_idx in 0..dim {
         let chunk_start = dim_idx * 4; // 4 bytes per dimension (32 vectors / 8 bits)
 
-        for vec_idx in 0..FASTSCAN_BATCH_SIZE {
+        for (vec_idx, unpacked_vec) in unpacked.iter_mut().enumerate().take(FASTSCAN_BATCH_SIZE) {
             let byte_idx = chunk_start + (vec_idx / 8);
             let bit_offset = (vec_idx % 8) * 4;
 
             if bit_offset < 4 {
-                unpacked[vec_idx][dim_idx] = (packed_codes[byte_idx] >> bit_offset) & 0x0F;
+                unpacked_vec[dim_idx] = (packed_codes[byte_idx] >> bit_offset) & 0x0F;
             } else {
-                unpacked[vec_idx][dim_idx] = (packed_codes[byte_idx] >> 4) & 0x0F;
+                unpacked_vec[dim_idx] = (packed_codes[byte_idx] >> 4) & 0x0F;
             }
         }
     }

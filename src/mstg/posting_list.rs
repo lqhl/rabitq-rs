@@ -138,11 +138,8 @@ impl PostingList {
         }
 
         // Extract quantized vectors
-        let quantized_vecs: Vec<QuantizedVector> = self
-            .vectors
-            .iter()
-            .map(|v| v.quantized.clone())
-            .collect();
+        let quantized_vecs: Vec<QuantizedVector> =
+            self.vectors.iter().map(|v| v.quantized.clone()).collect();
 
         let ex_bits = self.rabitq_config.total_bits.saturating_sub(1);
 

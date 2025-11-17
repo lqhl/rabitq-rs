@@ -60,8 +60,10 @@ fn main() {
 
     println!("✓ Index built in {:.2}s", build_time.as_secs_f64());
     println!("  Posting lists: {}", index.posting_lists.len());
-    println!("  Avg list size: {:.1}",
-        n_base as f64 / index.posting_lists.len() as f64);
+    println!(
+        "  Avg list size: {:.1}",
+        n_base as f64 / index.posting_lists.len() as f64
+    );
     println!();
 
     // Warmup
@@ -83,7 +85,10 @@ fn main() {
         ("Fast (ef=100)", SearchParams::new(100, 0.5, 100)),
     ];
 
-    println!("{:<25} {:>12} {:>12} {:>12}", "Config", "Avg µs", "Min µs", "Max µs");
+    println!(
+        "{:<25} {:>12} {:>12} {:>12}",
+        "Config", "Avg µs", "Min µs", "Max µs"
+    );
     println!("{}", "─".repeat(65));
 
     for (name, params) in test_configs {

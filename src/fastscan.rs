@@ -145,9 +145,12 @@ impl QueryLutHighAcc {
 #[derive(Debug, Clone)]
 pub struct QueryContext {
     pub query: Vec<f32>,
+    #[allow(dead_code)]
     pub query_norm: f32,
     pub k1x_sum_q: f32, // c1 × sum_query (precomputed)
+    #[allow(dead_code)]
     pub kbx_sum_q: f32, // cb × sum_query (precomputed)
+    #[allow(dead_code)]
     pub binary_scale: f32,
     /// Optional LUT for FastScan batch search
     pub lut: Option<QueryLut>,
@@ -231,10 +234,7 @@ impl BatchData {
         let binary_bytes = self.padded_dim * BATCH_SIZE / 8;
         let offset = batch_idx * stride + binary_bytes;
         unsafe {
-            std::slice::from_raw_parts(
-                self.data[offset..].as_ptr() as *const f32,
-                BATCH_SIZE,
-            )
+            std::slice::from_raw_parts(self.data[offset..].as_ptr() as *const f32, BATCH_SIZE)
         }
     }
 
@@ -246,10 +246,7 @@ impl BatchData {
         let f_add_bytes = std::mem::size_of::<f32>() * BATCH_SIZE;
         let offset = batch_idx * stride + binary_bytes + f_add_bytes;
         unsafe {
-            std::slice::from_raw_parts(
-                self.data[offset..].as_ptr() as *const f32,
-                BATCH_SIZE,
-            )
+            std::slice::from_raw_parts(self.data[offset..].as_ptr() as *const f32, BATCH_SIZE)
         }
     }
 
@@ -262,10 +259,7 @@ impl BatchData {
         let f_rescale_bytes = std::mem::size_of::<f32>() * BATCH_SIZE;
         let offset = batch_idx * stride + binary_bytes + f_add_bytes + f_rescale_bytes;
         unsafe {
-            std::slice::from_raw_parts(
-                self.data[offset..].as_ptr() as *const f32,
-                BATCH_SIZE,
-            )
+            std::slice::from_raw_parts(self.data[offset..].as_ptr() as *const f32, BATCH_SIZE)
         }
     }
 
@@ -367,6 +361,7 @@ impl BatchData {
     }
 
     /// Pack a single batch into contiguous memory
+    #[allow(clippy::too_many_arguments)]
     fn pack_batch_into_memory(
         batch_vectors: &[QuantizedVector],
         batch_data: &mut [u8],

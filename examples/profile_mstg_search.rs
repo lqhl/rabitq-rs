@@ -60,8 +60,10 @@ fn main() {
 
     println!("✓ Index built in {:.2}s", build_time.as_secs_f64());
     println!("  Posting lists: {}", index.posting_lists.len());
-    println!("  Avg list size: {:.1}",
-        n_base as f64 / index.posting_lists.len() as f64);
+    println!(
+        "  Avg list size: {:.1}",
+        n_base as f64 / index.posting_lists.len() as f64
+    );
     println!();
 
     // Warmup
@@ -84,7 +86,10 @@ fn main() {
         ("Ultra Fast (ef=100)", SearchParams::new(100, 0.5, 100)),
     ];
 
-    println!("{:<25} {:>12} {:>12} {:>12}", "Config", "Avg µs", "Min µs", "Max µs");
+    println!(
+        "{:<25} {:>12} {:>12} {:>12}",
+        "Config", "Avg µs", "Min µs", "Max µs"
+    );
     println!("{}", "─".repeat(65));
 
     for (name, params) in test_configs {
@@ -125,7 +130,10 @@ fn main() {
     println!("  Total time:        {:.3}s", total_time.as_secs_f64());
     println!("  Queries:           {}", queries.len());
     println!("  Avg per query:     {} µs", avg_query_us);
-    println!("  QPS:               {:.1}", 1_000_000.0 / avg_query_us as f64);
+    println!(
+        "  QPS:               {:.1}",
+        1_000_000.0 / avg_query_us as f64
+    );
 
     println!("\n╔═══════════════════════════════════════════════════════════╗");
     println!("║              Expected Hotspots Analysis                   ║");
@@ -174,8 +182,10 @@ fn main() {
         let time_us = (avg_query_us as f64 * pct / 100.0) as u128;
         let bar_len = (pct / 2.0) as usize;
         let bar = "█".repeat(bar_len);
-        println!("{:<30} {:>6.1}%  {:>8} µs  {}",
-            component, pct, time_us, bar);
+        println!(
+            "{:<30} {:>6.1}%  {:>8} µs  {}",
+            component, pct, time_us, bar
+        );
     }
 
     println!("\n╔═══════════════════════════════════════════════════════════╗");

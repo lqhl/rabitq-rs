@@ -71,7 +71,7 @@ fn main() {
     // ==================== MSTG ====================
     println!("\n[MSTG] Building index...");
     let mstg_config = MstgConfig {
-        max_posting_size: 1000,  // Larger for better batching with FastScan
+        max_posting_size: 1000, // Larger for better batching with FastScan
         branching_factor: 8,
         balance_weight: 1.0,
         closure_epsilon: 0.3,
@@ -124,11 +124,11 @@ fn main() {
     let ivf_index = IvfRabitqIndex::train(
         &data,
         nlist,
-        7,  // 7 bits
+        7, // 7 bits
         Metric::L2,
         RotatorType::FhtKacRotator,
         42,
-        true,  // faster_config
+        true, // faster_config
     )
     .expect("IVF train failed");
     let ivf_build_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -171,7 +171,11 @@ fn main() {
         }
     }
 
-    println!("[IVF] Using nprobe={} (targeting recall ~{}%)", best_nprobe, (mstg_recall * 100.0) as i32);
+    println!(
+        "[IVF] Using nprobe={} (targeting recall ~{}%)",
+        best_nprobe,
+        (mstg_recall * 100.0) as i32
+    );
 
     println!("[IVF] Warmup...");
     let ivf_params = SearchParams {
@@ -205,12 +209,20 @@ fn main() {
 
     println!("\n📦 MSTG:");
     println!("  Build time:    {:>8.1} ms", mstg_build_ms);
-    println!("  Search time:   {:>8.1} µs  ({:.1} QPS)", mstg_search_us, 1_000_000.0 / mstg_search_us);
+    println!(
+        "  Search time:   {:>8.1} µs  ({:.1} QPS)",
+        mstg_search_us,
+        1_000_000.0 / mstg_search_us
+    );
     println!("  Recall@100:    {:>7.1}%", mstg_recall * 100.0);
 
     println!("\n📦 IVF (nprobe={}):", best_nprobe);
     println!("  Build time:    {:>8.1} ms", ivf_build_ms);
-    println!("  Search time:   {:>8.1} µs  ({:.1} QPS)", ivf_search_us, 1_000_000.0 / ivf_search_us);
+    println!(
+        "  Search time:   {:>8.1} µs  ({:.1} QPS)",
+        ivf_search_us,
+        1_000_000.0 / ivf_search_us
+    );
     println!("  Recall@100:    {:>7.1}%", ivf_recall * 100.0);
 
     println!("\n🔥 Performance:");

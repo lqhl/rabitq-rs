@@ -310,10 +310,9 @@ impl MstgIndex {
             }
 
             // Collect results for this batch
-            for i in 0..actual_batch_size {
+            for (i, &distance) in est_distances.iter().enumerate().take(actual_batch_size) {
                 let global_idx = batch_start + i;
                 let vector_id = plist.vectors[global_idx].vector_id;
-                let distance = est_distances[i];
 
                 if distance.is_finite() {
                     results.push((vector_id, distance));
