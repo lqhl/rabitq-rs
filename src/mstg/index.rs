@@ -315,7 +315,14 @@ impl MstgIndex {
                 let vector_id = plist.vectors[global_idx].vector_id;
 
                 if distance.is_finite() {
-                    results.push((vector_id, distance));
+                    // For L2 metric, clamp negative distances to 0 (due to quantization approximation errors)
+                    // For InnerProduct, negative values are valid (higher similarity)
+                    let clamped_distance = if self.config.metric == crate::Metric::L2 {
+                        distance.max(0.0)
+                    } else {
+                        distance
+                    };
+                    results.push((vector_id, clamped_distance));
                 }
             }
         }
