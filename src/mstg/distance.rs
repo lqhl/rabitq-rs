@@ -88,7 +88,7 @@ pub fn estimate_distance(
     let distance_1bit = quantized.f_add + g_add + quantized.f_rescale * binary_term;
 
     // Step 3: Add extended code contribution if available
-    if ctx.ex_bits > 0 {
+    let final_distance = if ctx.ex_bits > 0 {
         let ex_code = quantized.unpack_ex_code();
         let ex_dot: f32 = ex_code
             .iter()
@@ -107,6 +107,14 @@ pub fn estimate_distance(
         }
     } else {
         distance_1bit
+    };
+
+    // For L2 metric, clamp negative distances to 0 (due to quantization approximation errors)
+    // For InnerProduct, negative values are valid (higher similarity)
+    if metric == Metric::L2 {
+        final_distance.max(0.0)
+    } else {
+        final_distance
     }
 }
 

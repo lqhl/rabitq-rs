@@ -38,6 +38,6 @@ dev = [
 ]
 
 [tool.maturin]
-features = ["python", "avx512"]
+features = ["python"]
 python-source = "python"
 module-name = "rabitq_rs"

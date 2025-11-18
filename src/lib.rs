@@ -10,6 +10,7 @@ pub mod mstg;
 #[cfg(feature = "python")]
 pub mod python_bindings;
 
+mod fastscan; // Shared FastScan batch distance computation
 mod kmeans;
 mod math;
 mod memory;
