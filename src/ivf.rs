@@ -260,6 +260,10 @@ struct ClusterData {
     f_add_ex: Vec<f32>,
     f_rescale_ex: Vec<f32>,
 
+    /// Per-vector reconstruction parameters (for fetch_embedding)
+    delta: Vec<f32>,
+    vl: Vec<f32>,
+
     /// Metadata
     num_vectors: usize,
     padded_dim: usize,
@@ -419,6 +423,8 @@ impl ClusterData {
             ex_codes_packed: Vec::new(),
             f_add_ex: Vec::new(),
             f_rescale_ex: Vec::new(),
+            delta: Vec::new(),
+            vl: Vec::new(),
             num_vectors: 0,
             padded_dim,
             ex_bits,
@@ -454,6 +460,8 @@ impl ClusterData {
         let mut ex_codes_packed = Vec::with_capacity(num_vectors);
         let mut f_add_ex = Vec::with_capacity(num_vectors);
         let mut f_rescale_ex = Vec::with_capacity(num_vectors);
+        let mut delta = Vec::with_capacity(num_vectors);
+        let mut vl = Vec::with_capacity(num_vectors);
 
         let dim_bytes = padded_dim / 8;
 
@@ -473,6 +481,8 @@ impl ClusterData {
                 &mut ex_codes_packed,
                 &mut f_add_ex,
                 &mut f_rescale_ex,
+                &mut delta,
+                &mut vl,
             );
         }
 
@@ -520,6 +530,8 @@ impl ClusterData {
                 &mut ex_codes_packed,
                 &mut f_add_ex,
                 &mut f_rescale_ex,
+                &mut delta,
+                &mut vl,
             );
         }
 
@@ -530,6 +542,8 @@ impl ClusterData {
             ex_codes_packed,
             f_add_ex,
             f_rescale_ex,
+            delta,
+            vl,
             num_vectors,
             padded_dim,
             ex_bits,
@@ -549,6 +563,8 @@ impl ClusterData {
         ex_codes_packed: &mut Vec<Vec<u8>>,
         f_add_ex: &mut Vec<f32>,
         f_rescale_ex: &mut Vec<f32>,
+        delta: &mut Vec<f32>,
+        vl: &mut Vec<f32>,
     ) {
         assert_eq!(vectors.len(), simd::FASTSCAN_BATCH_SIZE);
         assert!(actual_count <= simd::FASTSCAN_BATCH_SIZE);
@@ -617,6 +633,9 @@ impl ClusterData {
                 f_add_ex.push(0.0);
                 f_rescale_ex.push(0.0);
             }
+            // Store reconstruction parameters
+            delta.push(vec.delta);
+            vl.push(vec.vl);
         }
     }
 
@@ -630,6 +649,8 @@ impl ClusterData {
         ex_codes_packed: &mut Vec<Vec<u8>>,
         f_add_ex: &mut Vec<f32>,
         f_rescale_ex: &mut Vec<f32>,
+        delta: &mut Vec<f32>,
+        vl: &mut Vec<f32>,
     ) {
         assert_eq!(vectors.len(), simd::FASTSCAN_BATCH_SIZE);
 
@@ -697,6 +718,9 @@ impl ClusterData {
                 f_add_ex.push(0.0);
                 f_rescale_ex.push(0.0);
             }
+            // Store reconstruction parameters
+            delta.push(vec.delta);
+            vl.push(vec.vl);
         }
     }
 }
@@ -1229,6 +1253,83 @@ impl IvfRabitqIndex {
         self.clusters.len()
     }
 
+    /// Fetch the original embedding for a given vector ID.
+    ///
+    /// This function reconstructs the approximate original vector from its quantized representation.
+    /// The reconstruction involves:
+    /// 1. Finding the cluster and local index for the vector ID
+    /// 2. Reconstructing the vector in rotated space using the quantized codes
+    /// 3. Applying inverse rotation to recover the original (unrotated) vector
+    ///
+    /// # Returns
+    /// - `Some(Vec<f32>)` containing the reconstructed vector if the ID exists
+    /// - `None` if the ID is not found in the index
+    ///
+    /// # Note
+    /// The returned vector is an approximation due to quantization losses.
+    /// The accuracy depends on the `total_bits` parameter used during training.
+    pub fn fetch_embedding(&self, vector_id: usize) -> Option<Vec<f32>> {
+        // Find which cluster contains this vector ID
+        for cluster in &self.clusters {
+            if let Some(local_idx) = cluster.ids.iter().position(|&id| id == vector_id) {
+                // Found the vector, now reconstruct it
+
+                // Step 1: Extract quantized codes
+                let ex_bits = self.ex_bits;
+
+                // Extract binary code from batch data
+                let batch_idx = local_idx / simd::FASTSCAN_BATCH_SIZE;
+                let in_batch_idx = local_idx % simd::FASTSCAN_BATCH_SIZE;
+
+                // Unpack binary code for this vector from FastScan layout
+                let batch_bin_codes = cluster.batch_bin_codes(batch_idx);
+                let dim_bytes = self.padded_dim / 8;
+                let mut binary_code_unpacked = vec![0u8; self.padded_dim];
+
+                // Use the existing unpack_single_vector function
+                simd::unpack_single_vector(
+                    batch_bin_codes,
+                    in_batch_idx,
+                    dim_bytes,
+                    &mut binary_code_unpacked,
+                );
+
+                // Extract ex_code (already stored per-vector)
+                let ex_code_packed = &cluster.ex_codes_packed[local_idx];
+                let mut ex_code_unpacked = vec![0u16; self.padded_dim];
+                if ex_bits > 0 {
+                    simd::unpack_ex_code(
+                        ex_code_packed,
+                        &mut ex_code_unpacked,
+                        self.padded_dim,
+                        ex_bits as u8,
+                    );
+                }
+
+                // Step 2: Reconstruct full code
+                let mut code = vec![0u16; self.padded_dim];
+                for i in 0..self.padded_dim {
+                    code[i] = ex_code_unpacked[i] + ((binary_code_unpacked[i] as u16) << ex_bits);
+                }
+
+                // Step 3: Reconstruct in rotated space
+                let delta = cluster.delta[local_idx];
+                let vl = cluster.vl[local_idx];
+                let mut rotated_reconstructed = vec![0.0f32; self.padded_dim];
+                for i in 0..self.padded_dim {
+                    rotated_reconstructed[i] = cluster.centroid[i] + delta * code[i] as f32 + vl;
+                }
+
+                // Step 4: Apply inverse rotation to get original space vector
+                let original_vector = self.rotator.inverse_rotate(&rotated_reconstructed);
+
+                return Some(original_vector);
+            }
+        }
+
+        None
+    }
+
     /// Persist the index to the provided filesystem path.
     pub fn save_to_path<P: AsRef<Path>>(&self, path: P) -> Result<(), RabitqError> {
         let file = File::create(path)?;
@@ -1375,6 +1476,16 @@ impl IvfRabitqIndex {
                 write_f32(&mut writer, val, Some(&mut hasher))?;
             }
             for &val in &cluster.f_rescale_ex {
+                write_f32(&mut writer, val, Some(&mut hasher))?;
+            }
+
+            // Write delta (reconstruction parameters)
+            for &val in &cluster.delta {
+                write_f32(&mut writer, val, Some(&mut hasher))?;
+            }
+
+            // Write vl (reconstruction parameters)
+            for &val in &cluster.vl {
                 write_f32(&mut writer, val, Some(&mut hasher))?;
             }
         }
@@ -1560,6 +1671,18 @@ impl IvfRabitqIndex {
                 f_rescale_ex.push(read_f32(&mut reader, Some(&mut hasher))?);
             }
 
+            // Read delta (reconstruction parameters)
+            let mut delta = Vec::with_capacity(num_vectors);
+            for _ in 0..num_vectors {
+                delta.push(read_f32(&mut reader, Some(&mut hasher))?);
+            }
+
+            // Read vl (reconstruction parameters)
+            let mut vl = Vec::with_capacity(num_vectors);
+            for _ in 0..num_vectors {
+                vl.push(read_f32(&mut reader, Some(&mut hasher))?);
+            }
+
             clusters.push(ClusterData {
                 centroid,
                 ids,
@@ -1567,6 +1690,8 @@ impl IvfRabitqIndex {
                 ex_codes_packed,
                 f_add_ex,
                 f_rescale_ex,
+                delta,
+                vl,
                 num_vectors,
                 padded_dim,
                 ex_bits,

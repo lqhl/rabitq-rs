@@ -50,6 +50,12 @@ pub trait Rotator: Send + Sync {
     /// Apply rotation into an existing buffer
     fn rotate_into(&self, input: &[f32], output: &mut [f32]);
 
+    /// Apply inverse rotation to recover original vector from rotated vector
+    fn inverse_rotate(&self, rotated: &[f32]) -> Vec<f32>;
+
+    /// Apply inverse rotation into an existing buffer
+    fn inverse_rotate_into(&self, rotated: &[f32], output: &mut [f32]);
+
     /// Get rotator type
     fn rotator_type(&self) -> RotatorType;
 
@@ -163,6 +169,32 @@ impl Rotator for MatrixRotator {
                 acc += value * weight;
             }
             output[row_idx] = acc;
+        }
+    }
+
+    fn inverse_rotate(&self, rotated: &[f32]) -> Vec<f32> {
+        assert_eq!(rotated.len(), self.padded_dim);
+        let mut output = vec![0.0f32; self.dim];
+        self.inverse_rotate_into(rotated, &mut output);
+        output
+    }
+
+    #[allow(clippy::needless_range_loop)]
+    fn inverse_rotate_into(&self, rotated: &[f32], output: &mut [f32]) {
+        assert_eq!(rotated.len(), self.padded_dim);
+        assert_eq!(output.len(), self.dim);
+
+        // For orthogonal matrix: inverse = transpose
+        // output = R^T * rotated
+        // Note: Using range loops for clarity in matrix-vector multiplication
+        for col_idx in 0..self.dim {
+            let mut acc = 0.0f32;
+            for row_idx in 0..self.padded_dim {
+                // Access matrix in transposed order
+                let matrix_value = self.matrix[row_idx * self.padded_dim + col_idx];
+                acc += matrix_value * rotated[row_idx];
+            }
+            output[col_idx] = acc;
         }
     }
 
@@ -368,6 +400,85 @@ impl Rotator for FhtKacRotator {
         }
     }
 
+    fn inverse_rotate(&self, rotated: &[f32]) -> Vec<f32> {
+        assert_eq!(rotated.len(), self.padded_dim);
+        let mut output = vec![0.0f32; self.dim];
+        self.inverse_rotate_into(rotated, &mut output);
+        output
+    }
+
+    fn inverse_rotate_into(&self, rotated: &[f32], output: &mut [f32]) {
+        assert_eq!(rotated.len(), self.padded_dim);
+        assert_eq!(output.len(), self.dim);
+
+        // Copy rotated data to temporary buffer (padded_dim size for computation)
+        let mut temp = vec![0.0f32; self.padded_dim];
+        temp.copy_from_slice(rotated);
+
+        let flip_offset = self.padded_dim / 8;
+
+        if self.trunc_dim == self.padded_dim {
+            // Case 1: trunc_dim == padded_dim (dimension is power of 2)
+            // Reverse the 4 rounds: each round was (flip -> FHT -> rescale)
+            // Inverse: (rescale^-1 -> FHT -> rescale by 1/n -> flip)
+            for round in (0..4).rev() {
+                let flip_start = round * flip_offset;
+                let flip_end = flip_start + flip_offset;
+
+                // Inverse rescale
+                Self::rescale(&mut temp, 1.0 / self.fac);
+                // FHT (self-inverse up to scaling)
+                Self::fht(&mut temp);
+                // Normalize by 1/n (where n = padded_dim)
+                Self::rescale(&mut temp, 1.0 / (self.padded_dim as f32));
+                // Flip sign (self-inverse)
+                Self::flip_sign(&mut temp, &self.flip[flip_start..flip_end]);
+            }
+        } else {
+            // Case 2: trunc_dim < padded_dim (dimension is not power of 2)
+            let start = self.padded_dim - self.trunc_dim;
+
+            // First, inverse the final rescale(0.25)
+            Self::rescale(&mut temp, 4.0);
+
+            // Round 4 inverse: reverse order of (flip -> FHT -> rescale -> kacs)
+            // kacs_walk is self-inverse up to factor of 2
+            Self::rescale(&mut temp, 0.5);
+            Self::kacs_walk(&mut temp);
+            Self::rescale(&mut temp[start..], 1.0 / self.fac);
+            Self::fht(&mut temp[start..]);
+            Self::rescale(&mut temp[start..], 1.0 / (self.trunc_dim as f32));
+            Self::flip_sign(&mut temp, &self.flip[3 * flip_offset..4 * flip_offset]);
+
+            // Round 3 inverse
+            Self::rescale(&mut temp, 0.5);
+            Self::kacs_walk(&mut temp);
+            Self::rescale(&mut temp[..self.trunc_dim], 1.0 / self.fac);
+            Self::fht(&mut temp[..self.trunc_dim]);
+            Self::rescale(&mut temp[..self.trunc_dim], 1.0 / (self.trunc_dim as f32));
+            Self::flip_sign(&mut temp, &self.flip[2 * flip_offset..3 * flip_offset]);
+
+            // Round 2 inverse
+            Self::rescale(&mut temp, 0.5);
+            Self::kacs_walk(&mut temp);
+            Self::rescale(&mut temp[start..], 1.0 / self.fac);
+            Self::fht(&mut temp[start..]);
+            Self::rescale(&mut temp[start..], 1.0 / (self.trunc_dim as f32));
+            Self::flip_sign(&mut temp, &self.flip[flip_offset..2 * flip_offset]);
+
+            // Round 1 inverse
+            Self::rescale(&mut temp, 0.5);
+            Self::kacs_walk(&mut temp);
+            Self::rescale(&mut temp[..self.trunc_dim], 1.0 / self.fac);
+            Self::fht(&mut temp[..self.trunc_dim]);
+            Self::rescale(&mut temp[..self.trunc_dim], 1.0 / (self.trunc_dim as f32));
+            Self::flip_sign(&mut temp, &self.flip[0..flip_offset]);
+        }
+
+        // Extract original dimension (remove padding)
+        output.copy_from_slice(&temp[..self.dim]);
+    }
+
     fn rotator_type(&self) -> RotatorType {
         RotatorType::FhtKacRotator
     }
@@ -446,6 +557,20 @@ impl DynamicRotator {
         match self {
             DynamicRotator::Matrix(r) => r.rotate_into(input, output),
             DynamicRotator::Fht(r) => r.rotate_into(input, output),
+        }
+    }
+
+    pub fn inverse_rotate(&self, rotated: &[f32]) -> Vec<f32> {
+        match self {
+            DynamicRotator::Matrix(r) => r.inverse_rotate(rotated),
+            DynamicRotator::Fht(r) => r.inverse_rotate(rotated),
+        }
+    }
+
+    pub fn inverse_rotate_into(&self, rotated: &[f32], output: &mut [f32]) {
+        match self {
+            DynamicRotator::Matrix(r) => r.inverse_rotate_into(rotated, output),
+            DynamicRotator::Fht(r) => r.inverse_rotate_into(rotated, output),
         }
     }
 
@@ -582,6 +707,114 @@ mod tests {
 
         for (a, b) in out3.iter().zip(out4.iter()) {
             assert!((a - b).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_matrix_rotator_inverse() {
+        let dim = 64;
+        let rotator = MatrixRotator::new(dim, 12345);
+
+        let input = [1.5, 2.3, -0.7, 4.2]
+            .iter()
+            .cycle()
+            .take(dim)
+            .copied()
+            .collect::<Vec<_>>();
+
+        // Rotate and inverse rotate should recover original
+        let rotated = rotator.rotate(&input);
+        let recovered = rotator.inverse_rotate(&rotated);
+
+        assert_eq!(recovered.len(), dim);
+        for (orig, recov) in input.iter().zip(recovered.iter()) {
+            assert!(
+                (orig - recov).abs() < 1e-4,
+                "Matrix inverse rotation failed: expected {}, got {}",
+                orig,
+                recov
+            );
+        }
+    }
+
+    #[test]
+    fn test_fht_rotator_inverse_power_of_2() {
+        let dim = 64;
+        let rotator = FhtKacRotator::new(dim, 54321);
+
+        let input = [1.5, 2.3, -0.7, 4.2]
+            .iter()
+            .cycle()
+            .take(dim)
+            .copied()
+            .collect::<Vec<_>>();
+
+        // Rotate and inverse rotate should recover original
+        let rotated = rotator.rotate(&input);
+        let recovered = rotator.inverse_rotate(&rotated);
+
+        assert_eq!(recovered.len(), dim);
+        for (orig, recov) in input.iter().zip(recovered.iter()) {
+            assert!(
+                (orig - recov).abs() < 1e-3,
+                "FHT inverse rotation failed (power of 2): expected {}, got {}",
+                orig,
+                recov
+            );
+        }
+    }
+
+    #[test]
+    fn test_fht_rotator_inverse_non_power_of_2() {
+        let dim = 960; // GIST dataset dimension (not power of 2)
+        let rotator = FhtKacRotator::new(dim, 98765);
+
+        let input = [1.5, 2.3, -0.7, 4.2]
+            .iter()
+            .cycle()
+            .take(dim)
+            .copied()
+            .collect::<Vec<_>>();
+
+        // Rotate and inverse rotate should recover original
+        let rotated = rotator.rotate(&input);
+        let recovered = rotator.inverse_rotate(&rotated);
+
+        assert_eq!(recovered.len(), dim);
+        for (orig, recov) in input.iter().zip(recovered.iter()) {
+            assert!(
+                (orig - recov).abs() < 1e-3,
+                "FHT inverse rotation failed (non power of 2): expected {}, got {}",
+                orig,
+                recov
+            );
+        }
+    }
+
+    #[test]
+    fn test_dynamic_rotator_inverse() {
+        let dim = 128;
+
+        // Test MatrixRotator through DynamicRotator
+        let matrix_rot = DynamicRotator::new(dim, RotatorType::MatrixRotator, 11111);
+        let input = [1.5, 2.3, -0.7]
+            .iter()
+            .cycle()
+            .take(dim)
+            .copied()
+            .collect::<Vec<_>>();
+        let rotated = matrix_rot.rotate(&input);
+        let recovered = matrix_rot.inverse_rotate(&rotated);
+        for (orig, recov) in input.iter().zip(recovered.iter()) {
+            assert!((orig - recov).abs() < 1e-4);
+        }
+
+        // Test FhtKacRotator through DynamicRotator
+        let fht_rot = DynamicRotator::new(dim, RotatorType::FhtKacRotator, 22222);
+        let rotated = fht_rot.rotate(&input);
+        let recovered = fht_rot.inverse_rotate(&rotated);
+        for (orig, recov) in input.iter().zip(recovered.iter()) {
+            assert!((orig - recov).abs() < 1e-3);
         }
     }
 }
