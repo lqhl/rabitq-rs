@@ -534,9 +534,12 @@ fn compute_extended_factors(
     (f_add_ex, f_rescale_ex)
 }
 
-/// Reconstruct a vector from its quantised representation and centroid.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn reconstruct_into(centroid: &[f32], quantized: &QuantizedVector, output: &mut [f32]) {
+/// Reconstruct a vector from its quantised representation and centroid (in rotated space).
+///
+/// This reconstructs the vector in the **rotated space**. To get the original vector,
+/// you need to apply inverse rotation to the result.
+#[allow(dead_code)]
+pub(crate) fn reconstruct_into(centroid: &[f32], quantized: &QuantizedVector, output: &mut [f32]) {
     assert_eq!(centroid.len(), quantized.code.len());
     assert_eq!(output.len(), centroid.len());
     for i in 0..centroid.len() {

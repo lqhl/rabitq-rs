@@ -1618,3 +1618,122 @@ fn test_simple_serialization() {
     // Compare basic properties
     assert_eq!(index.len(), loaded_index.len());
 }
+
+#[test]
+fn test_fetch_embedding_reconstruction() {
+    // Create a small index with known vectors
+    let dim = 64;
+    let mut rng = StdRng::seed_from_u64(42);
+
+    // Generate 100 random vectors
+    let num_vectors = 100;
+    let data: Vec<Vec<f32>> = (0..num_vectors)
+        .map(|_| random_vector(dim, &mut rng))
+        .collect();
+
+    // Train index
+    let index = IvfRabitqIndex::train(
+        &data,
+        4, // nlist
+        7, // total_bits
+        Metric::L2,
+        RotatorType::MatrixRotator,
+        12345, // seed
+        false, // use_faster_config
+    )
+    .expect("Failed to train index");
+
+    // Test fetching embeddings
+    for (vector_id, original) in data.iter().enumerate() {
+        let reconstructed = index
+            .fetch_embedding(vector_id)
+            .unwrap_or_else(|| panic!("Failed to fetch embedding for vector {}", vector_id));
+
+        assert_eq!(
+            reconstructed.len(),
+            dim,
+            "Reconstructed vector has wrong dimension"
+        );
+
+        // Calculate reconstruction error
+        let mut diff_sqr = 0.0f32;
+        let mut norm_sqr = 0.0f32;
+        for (a, b) in original.iter().zip(reconstructed.iter()) {
+            let diff = a - b;
+            diff_sqr += diff * diff;
+            norm_sqr += a * a;
+        }
+
+        let rel_error = if norm_sqr > f32::EPSILON {
+            (diff_sqr.sqrt()) / norm_sqr.sqrt()
+        } else {
+            0.0
+        };
+
+        // RaBitQ is lossy compression - expect significant reconstruction error
+        // With 7 bits, typical relative error is 50-150% due to quantization losses
+        assert!(
+            rel_error < 2.0,
+            "Reconstruction error too high for vector {}: relative error = {} (expected < 2.0)",
+            vector_id,
+            rel_error
+        );
+    }
+
+    // Test that non-existent ID returns None
+    assert!(
+        index.fetch_embedding(num_vectors + 10).is_none(),
+        "fetch_embedding should return None for non-existent ID"
+    );
+}
+
+#[test]
+fn test_fetch_embedding_fht_rotator() {
+    // Test with FHT rotator (different rotation implementation)
+    let dim = 128; // Power of 2 for FHT
+    let mut rng = StdRng::seed_from_u64(99);
+
+    let num_vectors = 50;
+    let data: Vec<Vec<f32>> = (0..num_vectors)
+        .map(|_| random_vector(dim, &mut rng))
+        .collect();
+
+    let index = IvfRabitqIndex::train(
+        &data,
+        8, // nlist
+        7, // total_bits
+        Metric::L2,
+        RotatorType::FhtKacRotator, // Test FHT rotator
+        54321,                      // seed
+        false,
+    )
+    .expect("Failed to train index with FHT rotator");
+
+    // Verify a few random vectors
+    for _ in 0..10 {
+        let vector_id = rng.gen_range(0..num_vectors);
+        let original = &data[vector_id];
+        let reconstructed = index
+            .fetch_embedding(vector_id)
+            .unwrap_or_else(|| panic!("Failed to fetch embedding for vector {}", vector_id));
+
+        assert_eq!(reconstructed.len(), dim);
+
+        // Calculate error
+        let error: f32 = original
+            .iter()
+            .zip(reconstructed.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f32>()
+            .sqrt();
+
+        let norm: f32 = original.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let rel_error = error / norm.max(f32::EPSILON);
+
+        assert!(
+            rel_error < 2.0,
+            "FHT: Reconstruction error too high: {} (expected < 2.0)",
+            rel_error
+        );
+    }
+}
