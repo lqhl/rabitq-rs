@@ -1011,17 +1011,8 @@ impl IvfRabitqIndex {
             ));
         }
 
-        let rotator = DynamicRotator::new(dim, rotator_type, seed);
-        let padded_dim = rotator.padded_dim();
-
-        // Log huge pages status
-        crate::memory::log_huge_page_status();
-
-        println!("Rotating vectors...");
-        let rotated_data: Vec<Vec<f32>> = data.par_iter().map(|v| rotator.rotate(v)).collect();
-
         println!(
-            "Training k-means ({} clusters, {} iterations)...",
+            "Training k-means on original data ({} clusters, {} iterations)...",
             nlist, 30
         );
         let mut rng = StdRng::seed_from_u64(seed ^ 0x5a5a_5a5a5a5a5a5a);
@@ -1029,15 +1020,26 @@ impl IvfRabitqIndex {
             centroids,
             assignments,
             ..
-        } = run_kmeans(&rotated_data, nlist, 30, &mut rng);
+        } = run_kmeans(data, nlist, 30, &mut rng);
         println!("K-means training complete");
+
+        let rotator = DynamicRotator::new(dim, rotator_type, seed);
+        let padded_dim = rotator.padded_dim();
+
+        // Log huge pages status
+        crate::memory::log_huge_page_status();
+
+        println!("Rotating data vectors...");
+        let rotated_data: Vec<Vec<f32>> = data.par_iter().map(|v| rotator.rotate(v)).collect();
+        println!("Rotating centroids...");
+        let rotated_centroids: Vec<Vec<f32>> = centroids.par_iter().map(|c| rotator.rotate(c)).collect();
 
         Self::build_from_rotated(
             dim,
             padded_dim,
             metric,
             rotator,
-            centroids,
+            rotated_centroids,
             &rotated_data,
             &assignments,
             total_bits,
