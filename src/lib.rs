@@ -12,11 +12,11 @@ pub mod python_bindings;
 
 mod fastscan; // Shared FastScan batch distance computation
 mod kmeans;
-mod math;
+pub mod math;
 mod memory;
-mod quantizer;
-mod rotation;
-mod simd;
+pub mod quantizer;
+pub mod rotation;
+pub mod simd;
 
 pub use brute_force::{BruteForceRabitqIndex, BruteForceSearchParams, BruteForceSearchResult};
 pub use index::RabitqIndex;

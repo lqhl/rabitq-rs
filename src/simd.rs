@@ -1342,7 +1342,7 @@ unsafe fn accumulate_batch_highacc_avx512_impl(
 
 /// Scalar fallback for high-accuracy accumulation
 ///
-/// Same approach as regular scalar: unpack and compute directly
+/// Correct implementation that handles KPERM0 permutation
 fn accumulate_batch_highacc_scalar(
     packed_codes: &[u8],
     lut_low8: &[u8],
@@ -1350,44 +1350,80 @@ fn accumulate_batch_highacc_scalar(
     dim: usize,
     results: &mut [i32; FASTSCAN_BATCH_SIZE],
 ) {
-    results.fill(0);
+    // Same structure as accumulate_batch_scalar but using high-accuracy LUT
+    //
+    // The packed format (from pack_codes) organizes data as follows:
+    // - For each column (8 dimensions = 2 codebooks):
+    //   - 16 bytes for high 4-bit group (dims col*8+0..col*8+3)
+    //   - 16 bytes for low 4-bit group (dims col*8+4..col*8+7)
+    // - Each byte j contains:
+    //   - Low 4 bits: code for vector KPERM0[j]
+    //   - High 4 bits: code for vector KPERM0[j] + 16
 
-    // Unpack the codes first
-    let mut unpacked = vec![vec![0u8; dim]; FASTSCAN_BATCH_SIZE];
+    let mut sums = [0i32; FASTSCAN_BATCH_SIZE];
 
-    for dim_idx in 0..dim {
-        let chunk_start = dim_idx * 4;
+    // Process each column (8 dimensions = 2 codebooks at a time)
+    let dim_bytes = dim / 8;
 
-        for (vec_idx, unpacked_vec) in unpacked.iter_mut().enumerate().take(FASTSCAN_BATCH_SIZE) {
-            let byte_idx = chunk_start + (vec_idx / 8);
-            let bit_offset = (vec_idx % 8) * 4;
+    for col in 0..dim_bytes {
+        let packed_offset = col * 32;
+        let lut_offset_hi = (col * 2) * 16; // Codebook for dims col*8+0..col*8+3
+        let lut_offset_lo = (col * 2 + 1) * 16; // Codebook for dims col*8+4..col*8+7
 
-            if bit_offset < 4 {
-                unpacked_vec[dim_idx] = (packed_codes[byte_idx] >> bit_offset) & 0x0F;
-            } else {
-                unpacked_vec[dim_idx] = (packed_codes[byte_idx] >> 4) & 0x0F;
-            }
+        // Process high 4-bit group (first 16 packed bytes)
+        for j in 0..16 {
+            let packed_byte = packed_codes[packed_offset + j];
+            let code_lo = (packed_byte & 0x0F) as usize;
+            let code_hi = (packed_byte >> 4) as usize;
+
+            // KPERM0 maps packed position to vector index
+            let vec_idx_lo = KPERM0[j];
+            let vec_idx_hi = KPERM0[j] + 16;
+
+            // Reconstruct i16 value from low and high bytes for code_lo
+            let low_lo = lut_low8[lut_offset_hi + code_lo] as u16;
+            let high_lo = lut_high8[lut_offset_hi + code_lo] as u16;
+            let val_u16_lo = low_lo | (high_lo << 8);
+            let val_i16_lo = (val_u16_lo as i32) - 32768;
+
+            // Reconstruct i16 value for code_hi
+            let low_hi = lut_low8[lut_offset_hi + code_hi] as u16;
+            let high_hi = lut_high8[lut_offset_hi + code_hi] as u16;
+            let val_u16_hi = low_hi | (high_hi << 8);
+            let val_i16_hi = (val_u16_hi as i32) - 32768;
+
+            sums[vec_idx_lo] += val_i16_lo;
+            sums[vec_idx_hi] += val_i16_hi;
+        }
+
+        // Process low 4-bit group (next 16 packed bytes)
+        for j in 0..16 {
+            let packed_byte = packed_codes[packed_offset + 16 + j];
+            let code_lo = (packed_byte & 0x0F) as usize;
+            let code_hi = (packed_byte >> 4) as usize;
+
+            let vec_idx_lo = KPERM0[j];
+            let vec_idx_hi = KPERM0[j] + 16;
+
+            // Reconstruct i16 value from low and high bytes for code_lo
+            let low_lo = lut_low8[lut_offset_lo + code_lo] as u16;
+            let high_lo = lut_high8[lut_offset_lo + code_lo] as u16;
+            let val_u16_lo = low_lo | (high_lo << 8);
+            let val_i16_lo = (val_u16_lo as i32) - 32768;
+
+            // Reconstruct i16 value for code_hi
+            let low_hi = lut_low8[lut_offset_lo + code_hi] as u16;
+            let high_hi = lut_high8[lut_offset_lo + code_hi] as u16;
+            let val_u16_hi = low_hi | (high_hi << 8);
+            let val_i16_hi = (val_u16_hi as i32) - 32768;
+
+            sums[vec_idx_lo] += val_i16_lo;
+            sums[vec_idx_hi] += val_i16_hi;
         }
     }
 
-    // Compute dot products using high-accuracy LUT
-    for vec_idx in 0..FASTSCAN_BATCH_SIZE {
-        let mut sum: i32 = 0;
-        for dim_idx in 0..dim {
-            let code = unpacked[vec_idx][dim_idx] as usize;
-            let lut_block = (dim_idx / 4) * 16;
-            let lut_idx = lut_block + code;
-
-            // Reconstruct i16 value from low and high bytes
-            let low = lut_low8[lut_idx] as u16;
-            let high = lut_high8[lut_idx] as u16;
-            let val_u16 = low | (high << 8);
-            let val_i16 = (val_u16 as i32) - 32768; // Undo the +32768 shift
-
-            sum += val_i16;
-        }
-        results[vec_idx] = sum;
-    }
+    // Copy results
+    results.copy_from_slice(&sums);
 }
 
 /// Scalar fallback for accumulate_batch when SIMD is not available
@@ -1400,40 +1436,62 @@ fn accumulate_batch_scalar(
     dim: usize,
     results: &mut [u16; FASTSCAN_BATCH_SIZE],
 ) {
-    results.fill(0);
+    // Correct scalar implementation that handles KPERM0 permutation
+    //
+    // The packed format (from pack_codes) organizes data as follows:
+    // - For each column (8 dimensions = 2 codebooks):
+    //   - 16 bytes for high 4-bit group (dims col*8+0..col*8+3)
+    //   - 16 bytes for low 4-bit group (dims col*8+4..col*8+7)
+    // - Each byte j contains:
+    //   - Low 4 bits: code for vector KPERM0[j]
+    //   - High 4 bits: code for vector KPERM0[j] + 16
+    //
+    // The LUT is organized as: (dim/4) codebooks of 16 entries each
+    // Codebook i handles dimensions i*4 .. i*4+3
 
-    // Unpack the codes first to make logic simple and obviously correct
-    let mut unpacked = vec![vec![0u8; dim]; FASTSCAN_BATCH_SIZE];
+    let mut sums = [0i32; FASTSCAN_BATCH_SIZE];
 
-    // Unpack: each byte contains 2 codes (4 bits each)
-    for dim_idx in 0..dim {
-        let chunk_start = dim_idx * 4; // 4 bytes per dimension (32 vectors / 8 bits)
+    // Process each column (8 dimensions = 2 codebooks at a time)
+    let dim_bytes = dim / 8;
 
-        for (vec_idx, unpacked_vec) in unpacked.iter_mut().enumerate().take(FASTSCAN_BATCH_SIZE) {
-            let byte_idx = chunk_start + (vec_idx / 8);
-            let bit_offset = (vec_idx % 8) * 4;
+    for col in 0..dim_bytes {
+        let packed_offset = col * 32;
+        let lut_offset_hi = (col * 2) * 16; // Codebook for dims col*8+0..col*8+3
+        let lut_offset_lo = (col * 2 + 1) * 16; // Codebook for dims col*8+4..col*8+7
 
-            if bit_offset < 4 {
-                unpacked_vec[dim_idx] = (packed_codes[byte_idx] >> bit_offset) & 0x0F;
-            } else {
-                unpacked_vec[dim_idx] = (packed_codes[byte_idx] >> 4) & 0x0F;
-            }
+        // Process high 4-bit group (first 16 packed bytes)
+        for j in 0..16 {
+            let packed_byte = packed_codes[packed_offset + j];
+            let code_lo = (packed_byte & 0x0F) as usize;
+            let code_hi = (packed_byte >> 4) as usize;
+
+            // KPERM0 maps packed position to vector index
+            let vec_idx_lo = KPERM0[j];
+            let vec_idx_hi = KPERM0[j] + 16;
+
+            // Cast to u8 to treat as unsigned 0..255 (matching AVX2 behavior)
+            // lut is i8, so we cast to u8 to interpret bits as unsigned
+            sums[vec_idx_lo] += (lut[lut_offset_hi + code_lo] as u8) as i32;
+            sums[vec_idx_hi] += (lut[lut_offset_hi + code_hi] as u8) as i32;
+        }
+
+        // Process low 4-bit group (next 16 packed bytes)
+        for j in 0..16 {
+            let packed_byte = packed_codes[packed_offset + 16 + j];
+            let code_lo = (packed_byte & 0x0F) as usize;
+            let code_hi = (packed_byte >> 4) as usize;
+
+            let vec_idx_lo = KPERM0[j];
+            let vec_idx_hi = KPERM0[j] + 16;
+
+            sums[vec_idx_lo] += (lut[lut_offset_lo + code_lo] as u8) as i32;
+            sums[vec_idx_hi] += (lut[lut_offset_lo + code_hi] as u8) as i32;
         }
     }
 
-    // Now compute dot products using LUT
-    // LUT structure: packed by groups of 4 dimensions, each group has 16 entries
-    for vec_idx in 0..FASTSCAN_BATCH_SIZE {
-        let mut sum: i32 = 0;
-        for dim_idx in 0..dim {
-            let code = unpacked[vec_idx][dim_idx] as usize;
-            // LUT is organized as: (dim/4) groups of 16 entries each
-            // Within each 32-byte chunk of codes, there's a corresponding 16-entry LUT block
-            let lut_block = (dim_idx / 4) * 16;
-            let lut_idx = lut_block + code;
-            sum += lut[lut_idx] as i32;
-        }
-        results[vec_idx] = sum as u16;
+    // Convert to u16
+    for i in 0..FASTSCAN_BATCH_SIZE {
+        results[i] = sums[i] as u16;
     }
 }
 
@@ -1964,6 +2022,8 @@ fn compute_batch_distances_u16_scalar(
     lower_bound: &mut [f32; FASTSCAN_BATCH_SIZE],
 ) {
     for i in 0..FASTSCAN_BATCH_SIZE {
+        // Interpret u16 as unsigned (0..65535)
+        // This matches AVX2 behavior (cvtepu16_epi32)
         let accu = accu_res[i] as f32;
         ip_x0_qr[i] = lut_delta * accu + lut_sum_vl;
         est_distance[i] = batch_f_add[i] + g_add + batch_f_rescale[i] * (ip_x0_qr[i] + k1x_sum_q);
@@ -2180,6 +2240,75 @@ mod tests {
             "Packed and unpacked results differ: {} vs {}",
             result_packed,
             result_unpacked
+        );
+    }
+
+    /// Minimal test to verify scalar accumulate_batch produces correct results
+    /// This test directly checks that pack_codes + accumulate_batch_scalar gives
+    /// the same result as manual LUT lookup
+    #[test]
+    fn test_scalar_accumulate_batch_correctness() {
+        // Create a simple test case with known values
+        let dim = 64; // 8 bytes = 16 codebooks
+        let dim_bytes = dim / 8;
+
+        // Create a simple binary code for one vector
+        // Set some bits to 1 to have non-zero codes
+        let mut binary_code = vec![0u8; dim];
+        binary_code[0] = 1; // dim 0
+        binary_code[3] = 1; // dim 3
+        binary_code[8] = 1; // dim 8
+        binary_code[15] = 1; // dim 15
+
+        // Pack binary code
+        let mut binary_packed = vec![0u8; dim_bytes];
+        pack_binary_code(&binary_code, &mut binary_packed, dim);
+
+        // Pack into FastScan format (single vector, padded to 32)
+        let mut packed_codes = vec![0u8; 32 * dim_bytes];
+        pack_codes(&binary_packed, 1, dim_bytes, &mut packed_codes);
+
+        // Create a simple LUT (all 1s for easy verification)
+        // Each codebook has 16 entries
+        let num_codebooks = dim / 4;
+        let lut_size = num_codebooks * 16;
+        let mut lut = vec![0i8; lut_size];
+
+        // Set specific LUT values so we know what to expect
+        // For codebook 0 (dims 0-3), binary_code = [1,0,0,1] = 9 (MSB-first)
+        // For codebook 1 (dims 4-7), binary_code = [0,0,0,0] = 0
+        // For codebook 2 (dims 8-11), binary_code = [1,0,0,0] = 8
+        // For codebook 3 (dims 12-15), binary_code = [0,0,0,1] = 1
+        // ...rest are 0
+
+        // code 9 = binary_code[0]*8 + binary_code[1]*4 + binary_code[2]*2 + binary_code[3]
+        //        = 1*8 + 0 + 0 + 1 = 9 ✓
+        // code 8 for codebook 2 = 1*8 + 0 + 0 + 0 = 8 ✓
+        // code 1 for codebook 3 = 0 + 0 + 0 + 1 = 1 ✓
+
+        lut[9] = 10; // Codebook 0, code 9
+        lut[16] = 20; // Codebook 1, code 0
+        lut[2 * 16 + 8] = 30; // Codebook 2, code 8
+        lut[3 * 16 + 1] = 40; // Codebook 3, code 1
+                              // Rest are 0
+
+        // Expected sum for vector 0: 10 + 20 + 30 + 40 = 100
+        let expected_sum = 100i32;
+
+        // Run scalar accumulation
+        let mut results = [0u16; FASTSCAN_BATCH_SIZE];
+        accumulate_batch_scalar(&packed_codes, &lut, dim, &mut results);
+
+        let actual_sum = results[0] as i16 as i32;
+        println!(
+            "test_scalar_accumulate_batch_correctness: expected={}, actual={}",
+            expected_sum, actual_sum
+        );
+
+        assert_eq!(
+            actual_sum, expected_sum,
+            "Scalar accumulate_batch result mismatch: expected {}, got {}",
+            expected_sum, actual_sum
         );
     }
 
