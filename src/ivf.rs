@@ -1167,7 +1167,9 @@ impl IvfRabitqIndex {
                     .collect();
 
                 let completed = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                if completed.is_multiple_of((total_clusters / 20).max(1)) || completed == total_clusters {
+                if completed.is_multiple_of((total_clusters / 20).max(1))
+                    || completed == total_clusters
+                {
                     println!(
                         "  Quantized {}/{} clusters ({:.1}%)",
                         completed,
@@ -1579,8 +1581,7 @@ impl IvfRabitqIndex {
             let batch_data_len = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
 
             // Validate batch_data_len is reasonable
-            let total_batches =
-                num_vectors.div_ceil(simd::FASTSCAN_BATCH_SIZE);
+            let total_batches = num_vectors.div_ceil(simd::FASTSCAN_BATCH_SIZE);
             let expected_batch_data_len = ClusterData::batch_stride(padded_dim) * total_batches;
             if batch_data_len != expected_batch_data_len {
                 eprintln!("DEBUG: batch_data_len mismatch");

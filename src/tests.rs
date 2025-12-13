@@ -669,12 +669,11 @@ fn preclustered_training_matches_naive_l2() {
                 let rel_error = score_diff / nv.score.abs();
                 rel_error < 0.01 || score_diff < 1e-5
             };
-            
-            if fs.id != nv.id
-                 && !acceptable {
-                     println!("ID mismatch at position {}: fastscan id={} score={:.6}, naive id={} score={:.6}, diff={:.6}", 
+
+            if fs.id != nv.id && !acceptable {
+                println!("ID mismatch at position {}: fastscan id={} score={:.6}, naive id={} score={:.6}, diff={:.6}", 
                         i, fs.id, fs.score, nv.id, nv.score, score_diff);
-                 }
+            }
 
             assert!(
                 acceptable,
@@ -736,11 +735,10 @@ fn preclustered_training_matches_naive_ip() {
                 rel_error < 0.02 || score_diff < 1e-5
             };
 
-            if fs.id != nv.id
-                 && !acceptable {
-                     println!("ID mismatch at position {}: fastscan id={} score={:.6}, naive id={} score={:.6}, diff={:.6}", 
+            if fs.id != nv.id && !acceptable {
+                println!("ID mismatch at position {}: fastscan id={} score={:.6}, naive id={} score={:.6}, diff={:.6}", 
                         i, fs.id, fs.score, nv.id, nv.score, score_diff);
-                 }
+            }
 
             assert!(
                 acceptable,
