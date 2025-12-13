@@ -249,8 +249,7 @@ impl MstgIndex {
         // Use hnsw_rs file_dump API
         // This creates {base_path}.hnsw.graph and {base_path}.hnsw.data
         self.centroid_index.save_hnsw(base_path).map_err(|e| {
-            RabitqError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            RabitqError::Io(std::io::Error::other(
                 format!("HNSW save failed: {}", e),
             ))
         })?;
@@ -261,8 +260,7 @@ impl MstgIndex {
     /// Load HNSW graph using hnsw_rs reload API
     fn load_hnsw(&mut self, base_path: &str) -> Result<(), RabitqError> {
         self.centroid_index.load_hnsw(base_path).map_err(|e| {
-            RabitqError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            RabitqError::Io(std::io::Error::other(
                 format!("HNSW load failed: {}", e),
             ))
         })?;

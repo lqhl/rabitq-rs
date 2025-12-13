@@ -743,7 +743,7 @@ impl QueryLutHighAcc {
     /// Splits quantized values into low8 and high8 components
     fn new(rotated_query: &[f32], padded_dim: usize) -> Self {
         assert!(
-            padded_dim % 4 == 0,
+            padded_dim.is_multiple_of(4),
             "padded_dim must be multiple of 4 for LUT"
         );
 
@@ -797,7 +797,7 @@ impl QueryLut {
     /// Reference: C++ Lut constructor in lut.hpp:27-53
     fn new(rotated_query: &[f32], padded_dim: usize) -> Self {
         assert!(
-            padded_dim % 4 == 0,
+            padded_dim.is_multiple_of(4),
             "padded_dim must be multiple of 4 for LUT"
         );
 
@@ -1167,7 +1167,7 @@ impl IvfRabitqIndex {
                     .collect();
 
                 let completed = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                if completed % (total_clusters / 20).max(1) == 0 || completed == total_clusters {
+                if completed.is_multiple_of((total_clusters / 20).max(1)) || completed == total_clusters {
                     println!(
                         "  Quantized {}/{} clusters ({:.1}%)",
                         completed,
@@ -1580,7 +1580,7 @@ impl IvfRabitqIndex {
 
             // Validate batch_data_len is reasonable
             let total_batches =
-                (num_vectors + simd::FASTSCAN_BATCH_SIZE - 1) / simd::FASTSCAN_BATCH_SIZE;
+                num_vectors.div_ceil(simd::FASTSCAN_BATCH_SIZE);
             let expected_batch_data_len = ClusterData::batch_stride(padded_dim) * total_batches;
             if batch_data_len != expected_batch_data_len {
                 eprintln!("DEBUG: batch_data_len mismatch");

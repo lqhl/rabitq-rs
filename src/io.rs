@@ -167,7 +167,7 @@ fn log_progress(label: &str, count: usize) {
 }
 
 fn should_log_progress(count: usize, interval: usize) -> bool {
-    interval > 0 && count != 0 && count % interval == 0
+    interval > 0 && count != 0 && count.is_multiple_of(interval)
 }
 
 #[cfg(test)]

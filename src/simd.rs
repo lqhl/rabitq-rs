@@ -14,7 +14,7 @@
 #[inline]
 pub fn pack_binary_code(binary_code: &[u8], packed: &mut [u8], dim: usize) {
     debug_assert_eq!(binary_code.len(), dim);
-    debug_assert_eq!(packed.len(), (dim + 7) / 8);
+    debug_assert_eq!(packed.len(), dim.div_ceil(8));
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     unsafe {
@@ -35,7 +35,7 @@ pub fn pack_binary_code(binary_code: &[u8], packed: &mut [u8], dim: usize) {
 /// * `dim` - Dimension (number of elements)
 #[inline]
 pub fn unpack_binary_code(packed: &[u8], binary_code: &mut [u8], dim: usize) {
-    debug_assert_eq!(packed.len(), (dim + 7) / 8);
+    debug_assert_eq!(packed.len(), dim.div_ceil(8));
     debug_assert_eq!(binary_code.len(), dim);
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
@@ -66,17 +66,17 @@ pub fn pack_ex_code(ex_code: &[u16], packed: &mut [u8], dim: usize, ex_bits: u8)
     }
 
     // Check for special C++ compatible formats first
-    if dim % 16 == 0 {
+    if dim.is_multiple_of(16) {
         if ex_bits == 2 {
-             pack_ex_code_2bit_cpp_compat(ex_code, packed, dim);
-             return;
+            pack_ex_code_2bit_cpp_compat(ex_code, packed, dim);
+            return;
         } else if ex_bits == 6 {
-             pack_ex_code_6bit_cpp_compat(ex_code, packed, dim);
-             return;
+            pack_ex_code_6bit_cpp_compat(ex_code, packed, dim);
+            return;
         }
     }
 
-    let expected_bytes = ((dim * ex_bits as usize) + 7) / 8;
+    let expected_bytes = (dim * ex_bits as usize).div_ceil(8);
     debug_assert_eq!(packed.len(), expected_bytes);
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
@@ -109,17 +109,17 @@ pub fn unpack_ex_code(packed: &[u8], ex_code: &mut [u16], dim: usize, ex_bits: u
 
     // Check for special C++ compatible formats first
     // These formats require specific padding (multiple of 16)
-    if dim % 16 == 0 {
+    if dim.is_multiple_of(16) {
         if ex_bits == 2 {
-             unpack_ex_code_2bit_cpp_compat(packed, ex_code, dim);
-             return;
+            unpack_ex_code_2bit_cpp_compat(packed, ex_code, dim);
+            return;
         } else if ex_bits == 6 {
-             unpack_ex_code_6bit_cpp_compat(packed, ex_code, dim);
-             return;
+            unpack_ex_code_6bit_cpp_compat(packed, ex_code, dim);
+            return;
         }
     }
 
-    let expected_bytes = ((dim * ex_bits as usize) + 7) / 8;
+    let expected_bytes = (dim * ex_bits as usize).div_ceil(8);
     debug_assert_eq!(packed.len(), expected_bytes);
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
@@ -791,7 +791,7 @@ fn lowbit(x: usize) -> usize {
 #[allow(dead_code)]
 pub fn pack_lut_i8(query: &[f32], lut: &mut [i8]) {
     assert!(
-        query.len() % 4 == 0,
+        query.len().is_multiple_of(4),
         "Query dimension must be multiple of 4"
     );
     let num_codebook = query.len() / 4;
@@ -817,7 +817,7 @@ pub fn pack_lut_i8(query: &[f32], lut: &mut [i8]) {
 /// Pack lookup table as f32 (for non-SIMD paths)
 pub fn pack_lut_f32(query: &[f32], lut: &mut [f32]) {
     assert!(
-        query.len() % 4 == 0,
+        query.len().is_multiple_of(4),
         "Query dimension must be multiple of 4"
     );
     let num_codebook = query.len() / 4;
@@ -862,7 +862,7 @@ fn reverse_4bit_pattern(pattern: u8) -> u8 {
 /// * `dim_bytes` - Dimension in bytes (each byte holds codes for 8 dimensions)
 /// * `packed` - Output packed data
 pub fn pack_codes(codes: &[u8], num_vectors: usize, dim_bytes: usize, packed: &mut [u8]) {
-    let num_batches = (num_vectors + FASTSCAN_BATCH_SIZE - 1) / FASTSCAN_BATCH_SIZE;
+    let num_batches = num_vectors.div_ceil(FASTSCAN_BATCH_SIZE);
     let expected_size = num_batches * FASTSCAN_BATCH_SIZE * dim_bytes;
     assert!(packed.len() >= expected_size, "Packed buffer too small");
 
@@ -975,7 +975,10 @@ pub fn accumulate_batch_avx2(
     dim: usize,
     results: &mut [u16; FASTSCAN_BATCH_SIZE],
 ) {
-    assert!(dim % 16 == 0, "Dimension must be multiple of 16 for SIMD");
+    assert!(
+        dim.is_multiple_of(16),
+        "Dimension must be multiple of 16 for SIMD"
+    );
 
     #[cfg(target_arch = "x86_64")]
     {
@@ -1190,7 +1193,10 @@ pub fn accumulate_batch_highacc_avx2(
     dim: usize,
     results: &mut [i32; FASTSCAN_BATCH_SIZE],
 ) {
-    assert!(dim % 16 == 0, "Dimension must be multiple of 16 for SIMD");
+    assert!(
+        dim.is_multiple_of(16),
+        "Dimension must be multiple of 16 for SIMD"
+    );
 
     #[cfg(target_arch = "x86_64")]
     {
@@ -1535,9 +1541,9 @@ fn accumulate_batch_scalar(
 #[inline]
 pub fn ip_packed_ex2_f32(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
     debug_assert_eq!(query.len(), padded_dim);
-    debug_assert_eq!(packed_ex_code.len(), (padded_dim * 2 + 7) / 8);
+    debug_assert_eq!(packed_ex_code.len(), (padded_dim * 2).div_ceil(8));
     debug_assert!(
-        padded_dim % 16 == 0,
+        padded_dim.is_multiple_of(16),
         "padded_dim must be multiple of 16 for 2-bit"
     );
 
@@ -1572,9 +1578,9 @@ pub fn ip_packed_ex2_f32(query: &[f32], packed_ex_code: &[u8], padded_dim: usize
 #[inline]
 pub fn ip_packed_ex6_f32(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
     debug_assert_eq!(query.len(), padded_dim);
-    debug_assert_eq!(packed_ex_code.len(), (padded_dim * 6 + 7) / 8);
+    debug_assert_eq!(packed_ex_code.len(), (padded_dim * 6).div_ceil(8));
     debug_assert!(
-        padded_dim % 16 == 0,
+        padded_dim.is_multiple_of(16),
         "padded_dim must be multiple of 16 for 6-bit"
     );
 
@@ -2193,9 +2199,9 @@ mod tests {
 
     #[test]
     fn test_pack_unpack_binary_code() {
-        let dim = 32;
+        let dim: usize = 32;
         let binary_code: Vec<u8> = (0..dim).map(|i| (i % 2) as u8).collect();
-        let mut packed = vec![0u8; (dim + 7) / 8];
+        let mut packed = vec![0u8; dim.div_ceil(8)];
         let mut unpacked = vec![0u8; dim];
 
         pack_binary_code(&binary_code, &mut packed, dim);
@@ -2206,9 +2212,9 @@ mod tests {
 
     #[test]
     fn test_pack_unpack_ex_code_2bit() {
-        let dim = 32;
+        let dim: usize = 32;
         let ex_code: Vec<u16> = (0..dim).map(|i| (i % 4) as u16).collect();
-        let mut packed = vec![0u8; ((dim * 2) + 7) / 8];
+        let mut packed = vec![0u8; (dim * 2).div_ceil(8)];
         let mut unpacked = vec![0u16; dim];
 
         pack_ex_code(&ex_code, &mut packed, dim, 2);
@@ -2219,9 +2225,9 @@ mod tests {
 
     #[test]
     fn test_pack_unpack_ex_code_4bit() {
-        let dim = 32;
+        let dim: usize = 32;
         let ex_code: Vec<u16> = (0..dim).map(|i| (i % 16) as u16).collect();
-        let mut packed = vec![0u8; ((dim * 4) + 7) / 8];
+        let mut packed = vec![0u8; (dim * 4).div_ceil(8)];
         let mut unpacked = vec![0u16; dim];
 
         pack_ex_code(&ex_code, &mut packed, dim, 4);
@@ -3254,10 +3260,10 @@ mod dispatch_tests {
     #[test]
     fn test_pack_unpack_binary_roundtrip() {
         use rand::Rng;
-        let dim = 32;
+        let dim: usize = 32;
         let mut rng = rand::thread_rng();
         let binary_code: Vec<u8> = (0..dim).map(|_| rng.gen_range(0..2)).collect();
-        let mut packed = vec![0u8; (dim + 7) / 8];
+        let mut packed = vec![0u8; dim.div_ceil(8)];
         let mut unpacked = vec![0u8; dim];
 
         pack_binary_code(&binary_code, &mut packed, dim);

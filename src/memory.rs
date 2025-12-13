@@ -27,7 +27,7 @@ fn get_page_size() -> usize {
 /// Round up to nearest multiple
 #[allow(dead_code)]
 fn round_up_to_multiple_of(size: usize, multiple: usize) -> usize {
-    ((size + multiple - 1) / multiple) * multiple
+    size.div_ceil(multiple) * multiple
 }
 
 /// Enable huge pages for a memory region (Linux only)

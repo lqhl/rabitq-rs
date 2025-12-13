@@ -456,14 +456,14 @@ impl BruteForceRabitqIndex {
         let mut vectors = Vec::with_capacity(vector_count);
         for _ in 0..vector_count {
             // Read packed binary code
-            let binary_packed_size = (padded_dim + 7) / 8;
+            let binary_packed_size = padded_dim.div_ceil(8);
             let mut binary_code_packed = vec![0u8; binary_packed_size];
             reader.read_exact(&mut binary_code_packed)?;
             hasher.update(&binary_code_packed);
 
             // Read packed ex code
             let ex_packed_size = if ex_bits > 0 {
-                ((padded_dim * ex_bits) + 7) / 8
+                (padded_dim * ex_bits).div_ceil(8)
             } else {
                 0
             };

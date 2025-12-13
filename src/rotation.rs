@@ -33,7 +33,7 @@ impl RotatorType {
 }
 
 fn round_up_to_multiple(value: usize, multiple: usize) -> usize {
-    ((value + multiple - 1) / multiple) * multiple
+    value.div_ceil(multiple) * multiple
 }
 
 /// Trait for vector rotation operations.
