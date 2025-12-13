@@ -65,6 +65,17 @@ pub fn pack_ex_code(ex_code: &[u16], packed: &mut [u8], dim: usize, ex_bits: u8)
         return;
     }
 
+    // Check for special C++ compatible formats first
+    if dim % 16 == 0 {
+        if ex_bits == 2 {
+             pack_ex_code_2bit_cpp_compat(ex_code, packed, dim);
+             return;
+        } else if ex_bits == 6 {
+             pack_ex_code_6bit_cpp_compat(ex_code, packed, dim);
+             return;
+        }
+    }
+
     let expected_bytes = ((dim * ex_bits as usize) + 7) / 8;
     debug_assert_eq!(packed.len(), expected_bytes);
 
@@ -94,6 +105,18 @@ pub fn unpack_ex_code(packed: &[u8], ex_code: &mut [u16], dim: usize, ex_bits: u
     if ex_bits == 0 {
         ex_code.fill(0);
         return;
+    }
+
+    // Check for special C++ compatible formats first
+    // These formats require specific padding (multiple of 16)
+    if dim % 16 == 0 {
+        if ex_bits == 2 {
+             unpack_ex_code_2bit_cpp_compat(packed, ex_code, dim);
+             return;
+        } else if ex_bits == 6 {
+             unpack_ex_code_6bit_cpp_compat(packed, ex_code, dim);
+             return;
+        }
     }
 
     let expected_bytes = ((dim * ex_bits as usize) + 7) / 8;
@@ -3226,5 +3249,35 @@ mod dispatch_tests {
     #[should_panic(expected = "Unsupported ex_bits: 1")]
     fn test_select_excode_ipfunc_unsupported() {
         select_excode_ipfunc(1); // Should panic
+    }
+
+    #[test]
+    fn test_pack_unpack_binary_roundtrip() {
+        use rand::Rng;
+        let dim = 32;
+        let mut rng = rand::thread_rng();
+        let binary_code: Vec<u8> = (0..dim).map(|_| rng.gen_range(0..2)).collect();
+        let mut packed = vec![0u8; (dim + 7) / 8];
+        let mut unpacked = vec![0u8; dim];
+
+        pack_binary_code(&binary_code, &mut packed, dim);
+        unpack_binary_code(&packed, &mut unpacked, dim);
+
+        assert_eq!(binary_code, unpacked, "Binary code roundtrip failed");
+    }
+
+    #[test]
+    fn test_pack_unpack_6bit_roundtrip() {
+        use rand::Rng;
+        let dim = 32;
+        let mut rng = rand::thread_rng();
+        let ex_code: Vec<u16> = (0..dim).map(|_| rng.gen_range(0..64)).collect();
+        let mut packed = vec![0u8; dim / 16 * 12];
+        let mut unpacked = vec![0u16; dim];
+
+        pack_ex_code_6bit_cpp_compat(&ex_code, &mut packed, dim);
+        unpack_ex_code_6bit_cpp_compat(&packed, &mut unpacked, dim);
+
+        assert_eq!(ex_code, unpacked, "6-bit roundtrip failed");
     }
 }

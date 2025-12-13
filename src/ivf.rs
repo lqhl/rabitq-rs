@@ -28,11 +28,8 @@ pub struct SearchParams {
 /// Unpack binary codes from packed bytes
 pub(crate) fn unpack_binary_code(packed: &[u8], dim: usize) -> Vec<u8> {
     let mut binary_code = vec![0u8; dim];
-    for i in 0..dim {
-        if (packed[i / 8] & (1 << (i % 8))) != 0 {
-            binary_code[i] = 1;
-        }
-    }
+    // Use the optimized SIMD implementation which ensures correct bit order (MSB-first)
+    crate::simd::unpack_binary_code(packed, &mut binary_code, dim);
     binary_code
 }
 
@@ -42,34 +39,8 @@ pub(crate) fn unpack_ex_code(packed: &[u8], dim: usize, ex_bits: u8) -> Vec<u16>
         return vec![0u16; dim];
     }
     let mut ex_code = vec![0u16; dim];
-    let bits_per_element = ex_bits as usize;
-
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..dim {
-        let bit_offset = i * bits_per_element;
-        let byte_offset = bit_offset / 8;
-        let bit_in_byte = bit_offset % 8;
-
-        let mut code = 0u16;
-        let mut remaining_bits = bits_per_element;
-        let mut current_byte = byte_offset;
-        let mut current_bit = bit_in_byte;
-        let mut shift = 0;
-
-        while remaining_bits > 0 {
-            let bits_in_current_byte = (8 - current_bit).min(remaining_bits);
-            let mask = ((1u16 << bits_in_current_byte) - 1) as u8;
-            let bits = ((packed[current_byte] >> current_bit) & mask) as u16;
-            code |= bits << shift;
-
-            shift += bits_in_current_byte;
-            remaining_bits -= bits_in_current_byte;
-            current_byte += 1;
-            current_bit = 0;
-        }
-
-        ex_code[i] = code;
-    }
+    // Use the optimized SIMD implementation which also handles C++ compatible formats
+    crate::simd::unpack_ex_code(packed, &mut ex_code, dim, ex_bits);
     ex_code
 }
 
