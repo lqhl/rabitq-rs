@@ -63,6 +63,13 @@ This library provides a **feature-complete** RaBitQ + IVF search engine with all
 
 **Recommendation**: **Use IVF+RaBitQ for production workloads**. It's well-tested, documented, and optimized. Consider MSTG only if you're researching advanced indexing techniques or willing to help with testing and tuning.
 
+## Platform Support
+
+**x86_64 (Intel/AMD)**: ✅ Fully supported and tested  
+**ARM64 (Apple Silicon, ARM servers)**: ⚠️ **Known issues** - See [ARM64_KNOWN_ISSUES.md](ARM64_KNOWN_ISSUES.md)
+
+> **ARM64 Notice**: The current implementation has critical bugs on ARM64/AArch64 platforms that affect both L2 and Inner Product metrics. Distance calculations produce incorrect results, making the library unreliable on Apple Silicon Macs and ARM servers. We're actively investigating these issues. For now, **production use on ARM64 is NOT recommended**.
+
 ## Quick Start
 
 Add to your `Cargo.toml`:

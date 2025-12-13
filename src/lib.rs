@@ -1,6 +1,3 @@
-#![cfg_attr(target_arch = "x86_64", feature(avx512_target_feature))]
-#![cfg_attr(target_arch = "x86_64", feature(stdarch_x86_avx512))]
-
 pub mod brute_force;
 pub mod index;
 pub mod io;
@@ -12,11 +9,11 @@ pub mod python_bindings;
 
 mod fastscan; // Shared FastScan batch distance computation
 mod kmeans;
-mod math;
+pub mod math;
 mod memory;
-mod quantizer;
-mod rotation;
-mod simd;
+pub mod quantizer;
+pub mod rotation;
+pub mod simd;
 
 pub use brute_force::{BruteForceRabitqIndex, BruteForceSearchParams, BruteForceSearchResult};
 pub use index::RabitqIndex;

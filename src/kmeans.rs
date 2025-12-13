@@ -447,7 +447,7 @@ fn assign_points_for_update(
     decode_block_size: usize,
 ) -> AssignmentSummary {
     let rows = norms.len();
-    let num_chunks = (rows + decode_block_size - 1) / decode_block_size;
+    let num_chunks = rows.div_ceil(decode_block_size);
 
     // fold+reduce: each thread maintains its own state with reusable buffer
     let mut state = (0..num_chunks)
@@ -611,7 +611,7 @@ fn assign_full_dataset(
     decode_block_size: usize,
 ) -> Vec<usize> {
     let rows = norms.len();
-    let num_chunks = (rows + decode_block_size - 1) / decode_block_size;
+    let num_chunks = rows.div_ceil(decode_block_size);
     let results: Vec<(usize, Vec<usize>)> = (0..num_chunks)
         .into_par_iter()
         .map(|chunk_idx| {

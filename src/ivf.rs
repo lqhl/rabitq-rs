@@ -28,11 +28,8 @@ pub struct SearchParams {
 /// Unpack binary codes from packed bytes
 pub(crate) fn unpack_binary_code(packed: &[u8], dim: usize) -> Vec<u8> {
     let mut binary_code = vec![0u8; dim];
-    for i in 0..dim {
-        if (packed[i / 8] & (1 << (i % 8))) != 0 {
-            binary_code[i] = 1;
-        }
-    }
+    // Use the optimized SIMD implementation which ensures correct bit order (MSB-first)
+    crate::simd::unpack_binary_code(packed, &mut binary_code, dim);
     binary_code
 }
 
@@ -42,34 +39,8 @@ pub(crate) fn unpack_ex_code(packed: &[u8], dim: usize, ex_bits: u8) -> Vec<u16>
         return vec![0u16; dim];
     }
     let mut ex_code = vec![0u16; dim];
-    let bits_per_element = ex_bits as usize;
-
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..dim {
-        let bit_offset = i * bits_per_element;
-        let byte_offset = bit_offset / 8;
-        let bit_in_byte = bit_offset % 8;
-
-        let mut code = 0u16;
-        let mut remaining_bits = bits_per_element;
-        let mut current_byte = byte_offset;
-        let mut current_bit = bit_in_byte;
-        let mut shift = 0;
-
-        while remaining_bits > 0 {
-            let bits_in_current_byte = (8 - current_bit).min(remaining_bits);
-            let mask = ((1u16 << bits_in_current_byte) - 1) as u8;
-            let bits = ((packed[current_byte] >> current_bit) & mask) as u16;
-            code |= bits << shift;
-
-            shift += bits_in_current_byte;
-            remaining_bits -= bits_in_current_byte;
-            current_byte += 1;
-            current_bit = 0;
-        }
-
-        ex_code[i] = code;
-    }
+    // Use the optimized SIMD implementation which also handles C++ compatible formats
+    crate::simd::unpack_ex_code(packed, &mut ex_code, dim, ex_bits);
     ex_code
 }
 
@@ -772,7 +743,7 @@ impl QueryLutHighAcc {
     /// Splits quantized values into low8 and high8 components
     fn new(rotated_query: &[f32], padded_dim: usize) -> Self {
         assert!(
-            padded_dim % 4 == 0,
+            padded_dim.is_multiple_of(4),
             "padded_dim must be multiple of 4 for LUT"
         );
 
@@ -826,7 +797,7 @@ impl QueryLut {
     /// Reference: C++ Lut constructor in lut.hpp:27-53
     fn new(rotated_query: &[f32], padded_dim: usize) -> Self {
         assert!(
-            padded_dim % 4 == 0,
+            padded_dim.is_multiple_of(4),
             "padded_dim must be multiple of 4 for LUT"
         );
 
@@ -1032,7 +1003,8 @@ impl IvfRabitqIndex {
         println!("Rotating data vectors...");
         let rotated_data: Vec<Vec<f32>> = data.par_iter().map(|v| rotator.rotate(v)).collect();
         println!("Rotating centroids...");
-        let rotated_centroids: Vec<Vec<f32>> = centroids.par_iter().map(|c| rotator.rotate(c)).collect();
+        let rotated_centroids: Vec<Vec<f32>> =
+            centroids.par_iter().map(|c| rotator.rotate(c)).collect();
 
         Self::build_from_rotated(
             dim,
@@ -1195,7 +1167,9 @@ impl IvfRabitqIndex {
                     .collect();
 
                 let completed = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                if completed % (total_clusters / 20).max(1) == 0 || completed == total_clusters {
+                if completed.is_multiple_of((total_clusters / 20).max(1))
+                    || completed == total_clusters
+                {
                     println!(
                         "  Quantized {}/{} clusters ({:.1}%)",
                         completed,
@@ -1607,8 +1581,7 @@ impl IvfRabitqIndex {
             let batch_data_len = usize_from_u64(read_u64(&mut reader, Some(&mut hasher))?)?;
 
             // Validate batch_data_len is reasonable
-            let total_batches =
-                (num_vectors + simd::FASTSCAN_BATCH_SIZE - 1) / simd::FASTSCAN_BATCH_SIZE;
+            let total_batches = num_vectors.div_ceil(simd::FASTSCAN_BATCH_SIZE);
             let expected_batch_data_len = ClusterData::batch_stride(padded_dim) * total_batches;
             if batch_data_len != expected_batch_data_len {
                 eprintln!("DEBUG: batch_data_len mismatch");
@@ -2279,7 +2252,6 @@ mod batch_search_tests {
     }
 
     #[test]
-    #[ignore] // This test has incorrect logic - ip_x0_qr is an intermediate value, not final distance
     fn test_lut_accumulate_matches_direct_dot() {
         // Minimal test to verify LUT-based dot product matches direct computation
         let dim = 64;
@@ -2413,6 +2385,44 @@ mod batch_search_tests {
         }
         println!("Expected (direct): {:.6}", expected_result);
 
+        // Compute expected LUT accumulation manually
+        // Each codebook covers 4 dimensions, and the 4-bit code indexes into 16 LUT entries
+        let mut expected_accu_via_lut = 0i32;
+        for codebook_idx in 0..(padded_dim / 4) {
+            // Get the 4-bit code for this codebook from binary_code_unpacked
+            // binary_code_unpacked is in MSB-first order within each byte
+            let dim_base = codebook_idx * 4;
+            let mut code = 0u8;
+            for bit_idx in 0..4 {
+                if quantized.binary_code_unpacked[dim_base + bit_idx] != 0 {
+                    // KPOS tells us which bit position corresponds to which dimension
+                    // But the code itself is just the 4 binary bits packed
+                    code |= 1 << (3 - bit_idx); // MSB-first: dim_base+0 is MSB (bit 3)
+                }
+            }
+            let lut_val = lut_i8[codebook_idx * 16 + code as usize];
+            println!(
+                "  Codebook {}: dims {}-{}, binary=[{},{},{},{}], code={}, lut_i8[{}]={}",
+                codebook_idx,
+                dim_base,
+                dim_base + 3,
+                quantized.binary_code_unpacked[dim_base],
+                quantized.binary_code_unpacked[dim_base + 1],
+                quantized.binary_code_unpacked[dim_base + 2],
+                quantized.binary_code_unpacked[dim_base + 3],
+                code,
+                codebook_idx * 16 + code as usize,
+                lut_val
+            );
+            expected_accu_via_lut += lut_val as i32;
+        }
+        println!("Expected accu via LUT: {}", expected_accu_via_lut);
+        let expected_ip_x0_qr_via_lut = delta * (expected_accu_via_lut as f32) + sum_vl_lut;
+        println!(
+            "Expected ip_x0_qr via LUT: {:.6}",
+            expected_ip_x0_qr_via_lut
+        );
+
         // They should match within tolerance
         let diff = (binary_dot_v1 - ip_x0_qr).abs();
         println!("Difference: {:.6}", diff);
@@ -2425,10 +2435,6 @@ mod batch_search_tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_arch = "x86_64"),
-        ignore = "L2 distance computation differs on non-x86 architectures"
-    )]
     fn test_batch_search_matches_per_vector_l2() {
         // Test parameters
         let dim = 64;

@@ -25,7 +25,7 @@ impl QueryLut {
     /// Reference: C++ Lut constructor in lut.hpp:27-53
     pub fn new(query: &[f32], padded_dim: usize) -> Self {
         assert!(
-            padded_dim % 4 == 0,
+            padded_dim.is_multiple_of(4),
             "padded_dim must be multiple of 4 for LUT"
         );
 
@@ -92,7 +92,7 @@ impl QueryLutHighAcc {
     /// Splits quantized values into low8 and high8 components
     pub fn new(query: &[f32], padded_dim: usize) -> Self {
         assert!(
-            padded_dim % 4 == 0,
+            padded_dim.is_multiple_of(4),
             "padded_dim must be multiple of 4 for LUT"
         );
 

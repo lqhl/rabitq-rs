@@ -203,7 +203,7 @@ pub fn quantize_with_centroid(
     }
 
     // Pack binary code and ex code into bit-packed format
-    let binary_code_packed_size = (dim + 7) / 8;
+    let binary_code_packed_size = dim.div_ceil(8);
     let mut binary_code_packed = vec![0u8; binary_code_packed_size];
     simd::pack_binary_code(&binary_code, &mut binary_code_packed, dim);
 
@@ -214,7 +214,7 @@ pub fn quantize_with_centroid(
         1 => dim / 16 * 2,  // 2-bit total (1-bit ex-code) - not commonly used
         2 => dim / 16 * 4,  // 3-bit total (2-bit ex-code)
         6 => dim / 16 * 12, // 7-bit total (6-bit ex-code)
-        _ => ((dim * ex_bits) + 7) / 8, // Fallback for other bit configs
+        _ => (dim * ex_bits).div_ceil(8), // Fallback for other bit configs
     };
     let mut ex_code_packed = vec![0u8; ex_code_packed_size];
 
