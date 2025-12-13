@@ -1134,8 +1134,8 @@ unsafe fn accumulate_batch_avx512_impl(
     // This is the key performance advantage: half the loop iterations
     for i in (0..code_length).step_by(64) {
         // Load 64 bytes of codes and LUT in one operation
-        let c = _mm512_loadu_si512(packed_codes.as_ptr().add(i) as *const i32);
-        let lut_val = _mm512_loadu_si512(lut.as_ptr().add(i) as *const i32);
+        let c = _mm512_loadu_si512(packed_codes.as_ptr().add(i) as *const __m512i);
+        let lut_val = _mm512_loadu_si512(lut.as_ptr().add(i) as *const __m512i);
 
         // Extract low and high nibbles
         // lo contains codes for vectors 0-15, hi contains codes for vectors 16-31
@@ -1180,7 +1180,7 @@ unsafe fn accumulate_batch_avx512_impl(
     ret = _mm512_add_epi16(ret, _mm512_shuffle_i64x2::<0b11011101>(ret1, ret2));
 
     // Write back the 32 x u16 results
-    _mm512_storeu_si512(results.as_mut_ptr() as *mut i32, ret);
+    _mm512_storeu_si512(results.as_mut_ptr() as *mut __m512i, ret);
 }
 
 /// High-accuracy version of accumulate_batch using int32 accumulators
@@ -1333,9 +1333,9 @@ unsafe fn accumulate_batch_highacc_avx512_impl(
 
     // Process 64 bytes per iteration with AVX-512
     for i in (0..code_length).step_by(64) {
-        let c = _mm512_loadu_si512(packed_codes.as_ptr().add(i) as *const i32);
-        let lut_low = _mm512_loadu_si512(lut_low8.as_ptr().add(i) as *const i32);
-        let lut_high = _mm512_loadu_si512(lut_high8.as_ptr().add(i) as *const i32);
+        let c = _mm512_loadu_si512(packed_codes.as_ptr().add(i) as *const __m512i);
+        let lut_low = _mm512_loadu_si512(lut_low8.as_ptr().add(i) as *const __m512i);
+        let lut_high = _mm512_loadu_si512(lut_high8.as_ptr().add(i) as *const __m512i);
 
         let lo = _mm512_and_si512(c, low_mask);
         let hi = _mm512_and_si512(_mm512_srli_epi16(c, 4), low_mask);
