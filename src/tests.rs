@@ -1878,7 +1878,7 @@ fn debug_quantization_factors() {
     #[cfg(target_arch = "x86_64")]
     {
         assert!(
-            distance >= 0.0 && distance < 10.0,
+            (0.0..10.0).contains(&distance),
             "Distance should be non-negative and small for self-query, got {}",
             distance
         );

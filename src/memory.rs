@@ -74,6 +74,7 @@ pub unsafe fn enable_huge_pages(_ptr: *mut u8, _size: usize) -> std::io::Result<
 
 /// Custom aligned vector that uses page-aligned allocation
 #[cfg(all(feature = "huge_pages", target_os = "linux"))]
+#[allow(dead_code)]
 pub struct AlignedVec<T> {
     ptr: *mut T,
     len: usize,
@@ -81,6 +82,7 @@ pub struct AlignedVec<T> {
 }
 
 #[cfg(all(feature = "huge_pages", target_os = "linux"))]
+#[allow(dead_code)]
 impl<T: Default + Clone> AlignedVec<T> {
     pub fn new(size: usize) -> Self {
         let page_size = get_page_size();
@@ -179,7 +181,7 @@ pub fn allocate_aligned_vec<T: Default + Clone>(size: usize) -> Vec<T> {
     // Allocate extra space to guarantee we can align the data
     const CACHE_LINE_SIZE: usize = 64;
     let elem_size = std::mem::size_of::<T>();
-    let extra_elems = (CACHE_LINE_SIZE + elem_size - 1) / elem_size;
+    let extra_elems = CACHE_LINE_SIZE.div_ceil(elem_size);
 
     let mut vec = vec![T::default(); size + extra_elems];
 
