@@ -179,11 +179,9 @@ impl HierarchicalClustering {
             let under_i = under_idx.unwrap();
 
             // Find vector in over_i that's closest to under_i's centroid
-            if let Some(closest_idx) = self.find_closest_vector_to_centroid(
-                &clusters[over_i],
-                data,
-                &centroids[under_i],
-            ) {
+            if let Some(closest_idx) =
+                self.find_closest_vector_to_centroid(&clusters[over_i], data, &centroids[under_i])
+            {
                 let vec_id = clusters[over_i].remove(closest_idx);
                 clusters[under_i].push(vec_id);
             } else {

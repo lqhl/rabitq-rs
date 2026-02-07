@@ -69,10 +69,7 @@ impl CentroidIndex {
         // Store centroids in an Arc for stable addresses and cheap sharing
         let centroid_vecs: Arc<[Vec<f32>]> = Arc::from(centroids.into_boxed_slice());
         let hnsw_vecs: Arc<[Vec<f32>]> = if metric == Metric::InnerProduct {
-            let normalized: Vec<Vec<f32>> = centroid_vecs
-                .iter()
-                .map(|v| normalize(v))
-                .collect();
+            let normalized: Vec<Vec<f32>> = centroid_vecs.iter().map(|v| normalize(v)).collect();
             Arc::from(normalized.into_boxed_slice())
         } else {
             Arc::clone(&centroid_vecs)
@@ -398,15 +395,17 @@ mod tests {
 
     #[test]
     fn test_centroid_search_inner_product() {
-        let centroids = vec![
-            vec![2.0, 0.0],
-            vec![0.0, 3.0],
-            vec![1.0, 1.0],
-        ];
+        let centroids = vec![vec![2.0, 0.0], vec![0.0, 3.0], vec![1.0, 1.0]];
         let ids = vec![0, 1, 2];
 
-        let index =
-            CentroidIndex::build(centroids, ids, ScalarPrecision::FP32, 32, 200, Metric::InnerProduct);
+        let index = CentroidIndex::build(
+            centroids,
+            ids,
+            ScalarPrecision::FP32,
+            32,
+            200,
+            Metric::InnerProduct,
+        );
 
         let query = vec![10.0, 0.0];
         let results = index.search(&query, 2);

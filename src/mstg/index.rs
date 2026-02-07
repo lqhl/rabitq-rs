@@ -112,15 +112,14 @@ impl MstgIndex {
             posting_lists.iter().map(|p| p.centroid.clone()).collect();
         let centroid_ids: Vec<u32> = (0..posting_lists.len() as u32).collect();
 
-        let centroid_index =
-            CentroidIndex::build(
-                centroid_reps,
-                centroid_ids,
-                config.centroid_precision,
-                config.hnsw_m,
-                config.hnsw_ef_construction,
-                config.metric,
-            );
+        let centroid_index = CentroidIndex::build(
+            centroid_reps,
+            centroid_ids,
+            config.centroid_precision,
+            config.hnsw_m,
+            config.hnsw_ef_construction,
+            config.metric,
+        );
 
         println!(
             "  Built centroid index with {} centroids ({} precision)",

@@ -321,16 +321,14 @@ impl CentroidIndex {
                 let hnsw: Hnsw<f32, DistL2> = hnswio
                     .load_hnsw_with_dist(DistL2 {})
                     .map_err(|e| format!("HNSW load failed: {}", e))?;
-                let hnsw_static: Hnsw<'static, f32, DistL2> =
-                    unsafe { std::mem::transmute(hnsw) };
+                let hnsw_static: Hnsw<'static, f32, DistL2> = unsafe { std::mem::transmute(hnsw) };
                 super::hnsw::HnswCache::L2(hnsw_static)
             }
             crate::Metric::InnerProduct => {
                 let hnsw: Hnsw<f32, DistDot> = hnswio
                     .load_hnsw_with_dist(DistDot {})
                     .map_err(|e| format!("HNSW load failed: {}", e))?;
-                let hnsw_static: Hnsw<'static, f32, DistDot> =
-                    unsafe { std::mem::transmute(hnsw) };
+                let hnsw_static: Hnsw<'static, f32, DistDot> = unsafe { std::mem::transmute(hnsw) };
                 super::hnsw::HnswCache::Dot(hnsw_static)
             }
         };
