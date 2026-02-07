@@ -2,6 +2,8 @@
 
 use super::*;
 use rayon::prelude::*;
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 
 /// Main MSTG (Multi-Scale Tree Graph) index
 pub struct MstgIndex {
@@ -41,6 +43,16 @@ impl MstgIndex {
             .map(|v| assigner.assign(v, &centroids))
             .collect();
 
+        // Build reverse mapping: cluster_id -> vector indices
+        let mut cluster_to_vec_ids: Vec<Vec<usize>> = vec![Vec::new(); clusters.len()];
+        for (vec_id, assignments) in cluster_assignments.iter().enumerate() {
+            for &cluster_id in assignments {
+                if let Some(bucket) = cluster_to_vec_ids.get_mut(cluster_id) {
+                    bucket.push(vec_id);
+                }
+            }
+        }
+
         // Count total assignments for statistics
         let total_assignments: usize = cluster_assignments.iter().map(|a| a.len()).sum();
         let replication_factor = total_assignments as f32 / data.len() as f32;
@@ -55,32 +67,23 @@ impl MstgIndex {
                 let mut plist = PostingList::new(cluster_id as u32, cluster.centroid().to_vec());
 
                 // Collect vectors assigned to this cluster
-                let mut assigned_vectors = Vec::new();
-                let mut assigned_ids = Vec::new();
-
-                for (vec_id, assignments) in cluster_assignments.iter().enumerate() {
-                    if assignments.contains(&cluster_id) {
-                        assigned_vectors.push(data[vec_id].clone());
-                        assigned_ids.push(vec_id as u64);
+                if let Some(vec_ids) = cluster_to_vec_ids.get(cluster_id) {
+                    if !vec_ids.is_empty() {
+                        plist
+                            .quantize_vectors_by_ids(
+                                data,
+                                vec_ids,
+                                config.rabitq_bits,
+                                config.metric,
+                                config.faster_config,
+                            )
+                            .unwrap_or_else(|e| {
+                                eprintln!(
+                                    "Warning: Quantization failed for cluster {}: {}",
+                                    cluster_id, e
+                                );
+                            });
                     }
-                }
-
-                // Quantize if there are vectors
-                if !assigned_vectors.is_empty() {
-                    plist
-                        .quantize_vectors(
-                            &assigned_vectors,
-                            &assigned_ids,
-                            config.rabitq_bits,
-                            config.metric,
-                            config.faster_config,
-                        )
-                        .unwrap_or_else(|e| {
-                            eprintln!(
-                                "Warning: Quantization failed for cluster {}: {}",
-                                cluster_id, e
-                            );
-                        });
                 }
 
                 plist
@@ -110,7 +113,14 @@ impl MstgIndex {
         let centroid_ids: Vec<u32> = (0..posting_lists.len() as u32).collect();
 
         let centroid_index =
-            CentroidIndex::build(centroid_reps, centroid_ids, config.centroid_precision);
+            CentroidIndex::build(
+                centroid_reps,
+                centroid_ids,
+                config.centroid_precision,
+                config.hnsw_m,
+                config.hnsw_ef_construction,
+                config.metric,
+            );
 
         println!(
             "  Built centroid index with {} centroids ({} precision)",
@@ -150,6 +160,10 @@ impl MstgIndex {
     pub fn search(&self, query: &[f32], params: &SearchParams) -> Vec<SearchResult> {
         use crate::fastscan::QueryContext as FastScanQueryContext;
 
+        if params.top_k == 0 {
+            return Vec::new();
+        }
+
         // Step 1: Find candidate centroids
         let centroid_candidates = self.centroid_index.search(query, params.ef_search);
 
@@ -167,48 +181,20 @@ impl MstgIndex {
         }
 
         // Step 4: Search posting lists with FastScan batch distance computation
-        let mut all_candidates: Vec<(u64, f32)> = selected_centroids
-            .par_iter()
-            .flat_map(|&cid| {
-                let plist = &self.posting_lists[cid as usize];
+        let mut topk = TopK::new(params.top_k);
+        for &cid in &selected_centroids {
+            let plist = &self.posting_lists[cid as usize];
 
-                // Skip empty posting lists
-                if plist.vectors.is_empty() {
-                    return Vec::new();
-                }
+            // Skip empty posting lists
+            if plist.vectors.is_empty() {
+                continue;
+            }
 
-                // Use FastScan batch distance computation
-                self.search_posting_list_fastscan(&query_ctx, plist, &plist.batch_data)
-            })
-            .collect();
-
-        // Step 5: Partial sort to get top-k (faster than full sort)
-        // Use select_nth_unstable to partition so smallest distances are at front
-        let k = params.top_k.min(all_candidates.len());
-        if k > 0 && k < all_candidates.len() {
-            // Partition: first k elements are the smallest distances
-            all_candidates.select_nth_unstable_by(k, |a, b| {
-                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            // Sort only the top-k elements
-            all_candidates[..k].sort_unstable_by(|a, b| {
-                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-            });
-        } else {
-            // k >= len: sort all (fallback)
-            all_candidates.sort_unstable_by(|a, b| {
-                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            // Use FastScan batch distance computation with pruning
+            self.search_posting_list_fastscan(&query_ctx, plist, &plist.batch_data, &mut topk);
         }
-        all_candidates.truncate(k);
 
-        all_candidates
-            .into_iter()
-            .map(|(id, dist)| SearchResult {
-                vector_id: id as usize,
-                distance: dist,
-            })
-            .collect()
+        topk.into_sorted_results()
     }
 
     /// Search a posting list using FastScan batch distance computation
@@ -218,7 +204,8 @@ impl MstgIndex {
         query_ctx: &crate::fastscan::QueryContext,
         plist: &PostingList,
         batch_data: &crate::fastscan::BatchData,
-    ) -> Vec<(u64, f32)> {
+        topk: &mut TopK,
+    ) {
         use crate::math::{dot, l2_distance_sqr};
         use crate::simd;
 
@@ -239,7 +226,6 @@ impl MstgIndex {
             num_batches
         };
 
-        let mut results = Vec::with_capacity(plist.vectors.len());
         let use_highacc = padded_dim > 2048;
 
         for batch_idx in 0..total_batches {
@@ -309,12 +295,28 @@ impl MstgIndex {
                 );
             }
 
+            let threshold = topk.threshold();
+            if let Some(th) = threshold {
+                let min_lb = lower_bounds
+                    .iter()
+                    .take(actual_batch_size)
+                    .fold(f32::INFINITY, |acc, &v| acc.min(v));
+                if min_lb > th {
+                    continue;
+                }
+            }
+
             // Collect results for this batch
             for (i, &distance) in est_distances.iter().enumerate().take(actual_batch_size) {
                 let global_idx = batch_start + i;
                 let vector_id = plist.vectors[global_idx].vector_id;
 
                 if distance.is_finite() {
+                    if let Some(th) = topk.threshold() {
+                        if lower_bounds[i] > th {
+                            continue;
+                        }
+                    }
                     // For L2 metric, clamp negative distances to 0 (due to quantization approximation errors)
                     // For InnerProduct, negative values are valid (higher similarity)
                     let clamped_distance = if self.config.metric == crate::Metric::L2 {
@@ -322,12 +324,10 @@ impl MstgIndex {
                     } else {
                         distance
                     };
-                    results.push((vector_id, clamped_distance));
+                    topk.push(vector_id, clamped_distance);
                 }
             }
         }
-
-        results
     }
 
     /// Batch search for multiple queries (parallel)
@@ -358,6 +358,88 @@ impl MstgIndex {
             .iter()
             .filter(|(_, dist)| *dist <= threshold)
             .map(|(id, _)| *id)
+            .collect()
+    }
+}
+
+#[derive(Debug)]
+struct HeapItem {
+    distance: f32,
+    vector_id: u64,
+}
+
+impl PartialEq for HeapItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.distance.to_bits() == other.distance.to_bits()
+    }
+}
+
+impl Eq for HeapItem {}
+
+impl PartialOrd for HeapItem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HeapItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.distance.total_cmp(&other.distance)
+    }
+}
+
+struct TopK {
+    k: usize,
+    heap: BinaryHeap<HeapItem>,
+}
+
+impl TopK {
+    fn new(k: usize) -> Self {
+        Self {
+            k,
+            heap: BinaryHeap::new(),
+        }
+    }
+
+    fn threshold(&self) -> Option<f32> {
+        if self.heap.len() < self.k {
+            None
+        } else {
+            self.heap.peek().map(|item| item.distance)
+        }
+    }
+
+    fn push(&mut self, vector_id: u64, distance: f32) {
+        if self.k == 0 {
+            return;
+        }
+        if self.heap.len() < self.k {
+            self.heap.push(HeapItem {
+                distance,
+                vector_id,
+            });
+            return;
+        }
+
+        if let Some(top) = self.heap.peek() {
+            if distance < top.distance {
+                self.heap.pop();
+                self.heap.push(HeapItem {
+                    distance,
+                    vector_id,
+                });
+            }
+        }
+    }
+
+    fn into_sorted_results(self) -> Vec<SearchResult> {
+        let mut sorted = self.heap.into_sorted_vec();
+        sorted
+            .drain(..)
+            .map(|item| SearchResult {
+                vector_id: item.vector_id as usize,
+                distance: item.distance,
+            })
             .collect()
     }
 }
@@ -416,5 +498,10 @@ mod tests {
 
         // First result should be the query itself (or very close)
         assert!(results[0].distance < 0.1);
+
+        // Ensure results are sorted by distance (ascending)
+        for pair in results.windows(2) {
+            assert!(pair[0].distance <= pair[1].distance);
+        }
     }
 }

@@ -106,6 +106,46 @@ impl PostingList {
         Ok(())
     }
 
+    /// Quantize and add vectors by indices into the shared dataset
+    ///
+    /// This avoids cloning the full vectors during index build.
+    pub fn quantize_vectors_by_ids(
+        &mut self,
+        data: &[Vec<f32>],
+        vector_ids: &[usize],
+        rabitq_bits: usize,
+        metric: Metric,
+        faster_config: bool,
+    ) -> Result<(), String> {
+        if vector_ids.is_empty() {
+            return Ok(());
+        }
+
+        let dim = data[vector_ids[0]].len();
+
+        // Configure RaBitQ
+        self.rabitq_config = if faster_config {
+            RabitqConfig::faster(dim, rabitq_bits, 42)
+        } else {
+            RabitqConfig::new(rabitq_bits)
+        };
+
+        // Quantize each vector (as residual from centroid)
+        for &vec_id in vector_ids {
+            let vector = &data[vec_id];
+            let quantized = quantizer::quantize_with_centroid(
+                vector,
+                &self.centroid,
+                &self.rabitq_config,
+                metric,
+            );
+
+            self.add_vector(vec_id as u64, quantized);
+        }
+
+        Ok(())
+    }
+
     /// Get ex_bits for this posting list's RaBitQ config
     ///
     /// Returns the number of extended bits used in quantization
