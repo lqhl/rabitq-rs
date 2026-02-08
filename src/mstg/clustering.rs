@@ -78,11 +78,12 @@ impl HierarchicalClustering {
                 final_clusters.push(cluster);
             } else {
                 iteration += 1;
+                let split_k = self.branching_factor.min(cluster.size());
                 println!(
                     "  Iteration {}: Splitting cluster of size {} into {} subclusters",
                     iteration,
                     cluster.size(),
-                    self.branching_factor
+                    split_k
                 );
 
                 // Split using k-means
@@ -110,11 +111,31 @@ impl HierarchicalClustering {
         data: &[Vec<f32>],
         rng: &mut StdRng,
     ) -> Vec<Cluster> {
-        let k = self.branching_factor;
+        let size = cluster.size();
+        let k = self.branching_factor.min(size);
+        if size <= 1 {
+            return vec![cluster.clone()];
+        }
+        // Fast path: if size is small, avoid expensive k-means.
+        if size <= k {
+            return cluster
+                .indices()
+                .iter()
+                .map(|&idx| Cluster::from_indices(vec![idx], data))
+                .collect();
+        }
+        if size <= k * 2 {
+            return self.split_cluster_round_robin(cluster, data, k, rng);
+        }
         let cluster_data = collect_vectors(data, cluster.indices());
 
         // Run k-means on this cluster
-        let kmeans_result = run_kmeans(&cluster_data, k, self.max_iterations, rng);
+        let max_iter = if size <= 1_000 {
+            self.max_iterations.min(30)
+        } else {
+            self.max_iterations
+        };
+        let kmeans_result = run_kmeans(&cluster_data, k, max_iter, rng);
 
         // Group vectors by assignment
         let mut subcluster_indices: Vec<Vec<usize>> = vec![Vec::new(); k];
@@ -131,6 +152,29 @@ impl HierarchicalClustering {
 
         // Create clusters from grouped data
         subcluster_indices
+            .into_iter()
+            .filter(|indices| !indices.is_empty())
+            .map(|indices| Cluster::from_indices(indices, data))
+            .collect()
+    }
+
+    /// Fast split for tiny clusters: shuffle and round-robin assign.
+    fn split_cluster_round_robin(
+        &self,
+        cluster: &Cluster,
+        data: &[Vec<f32>],
+        k: usize,
+        rng: &mut StdRng,
+    ) -> Vec<Cluster> {
+        let mut indices: Vec<usize> = cluster.indices().to_vec();
+        indices.shuffle(rng);
+
+        let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); k];
+        for (i, idx) in indices.into_iter().enumerate() {
+            buckets[i % k].push(idx);
+        }
+
+        buckets
             .into_iter()
             .filter(|indices| !indices.is_empty())
             .map(|indices| Cluster::from_indices(indices, data))

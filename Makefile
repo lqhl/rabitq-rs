@@ -2,7 +2,6 @@
 
 # NOTE: All builds automatically use optimizations from .cargo/config.toml:
 # - target-cpu=native (enables AVX2/AVX-512 based on CPU capabilities)
-# - llvm-args=--ffast-math (equivalent to C++ -ffast-math)
 
 help:
 	@echo "RaBitQ-RS Python Bindings - Available Commands"
@@ -27,15 +26,15 @@ help:
 	@echo "  make lint              - Run Rust linter"
 	@echo "  make format            - Format Rust code"
 	@echo ""
-	@echo "NOTE: All builds use optimizations from .cargo/config.toml (target-cpu=native + fast-math)"
+	@echo "NOTE: All builds use optimizations from .cargo/config.toml (target-cpu=native)"
 	@echo ""
 
 # Build Python package in development mode
-# Optimizations (target-cpu=native, fast-math) are automatically applied via .cargo/config.toml
+# Optimizations (target-cpu=native) are automatically applied via .cargo/config.toml
 # AVX2/AVX-512 are auto-detected based on CPU capabilities
 build-python:
 	@echo "Building Python package with ALL optimizations..."
-	@echo "  (target-cpu=native + fast-math + auto AVX2/AVX-512 from .cargo/config.toml)"
+	@echo "  (target-cpu=native + auto AVX2/AVX-512 from .cargo/config.toml)"
 	maturin develop --release --features python,huge_pages
 
 # Build Python package without optimizations (for compatibility)
@@ -44,11 +43,11 @@ build-python-compat:
 	@RUSTFLAGS="" maturin develop --release --features python
 
 # Build wheel and install (with ALL optimizations)
-# Optimizations (target-cpu=native, fast-math) are automatically applied via .cargo/config.toml
+# Optimizations (target-cpu=native) are automatically applied via .cargo/config.toml
 # AVX2/AVX-512 are auto-detected based on CPU capabilities
 install-python:
 	@echo "Building wheel with ALL optimizations..."
-	@echo "  (target-cpu=native + fast-math + auto AVX2/AVX-512 from .cargo/config.toml)"
+	@echo "  (target-cpu=native + auto AVX2/AVX-512 from .cargo/config.toml)"
 	maturin build --release --features python,huge_pages
 	@echo "Installing wheel..."
 	pip install --force-reinstall target/wheels/rabitq_rs-*.whl
