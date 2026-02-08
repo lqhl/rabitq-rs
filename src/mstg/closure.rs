@@ -32,6 +32,10 @@ impl ClosureAssigner {
             .enumerate()
             .map(|(i, c)| (i, l2_distance_sqr(vector, c)))
             .collect();
+        let mut distances_by_idx = vec![0.0f32; centroids.len()];
+        for &(idx, dist) in &distances {
+            distances_by_idx[idx] = dist;
+        }
 
         // Sort by distance (ascending)
         distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
@@ -48,7 +52,7 @@ impl ClosureAssigner {
             .collect();
 
         // Apply RNG rule to reduce redundancy
-        candidates = self.apply_rng_rule(vector, centroids, candidates, &distances);
+        candidates = self.apply_rng_rule(centroids, candidates, &distances_by_idx);
 
         candidates
     }
@@ -61,10 +65,9 @@ impl ClosureAssigner {
     /// This ensures geometric diversity of assigned clusters
     fn apply_rng_rule(
         &self,
-        _vector: &[f32],
         centroids: &[Vec<f32>],
         candidates: Vec<usize>,
-        distances: &[(usize, f32)],
+        distances_by_idx: &[f32],
     ) -> Vec<usize> {
         let mut filtered = Vec::new();
 
@@ -73,17 +76,15 @@ impl ClosureAssigner {
 
             // Check against previously selected centroids
             for &selected_idx in &filtered {
-                let dist_candidate_to_v = distances
-                    .iter()
-                    .find(|(idx, _)| *idx == candidate_idx)
-                    .map(|(_, d)| *d)
-                    .unwrap_or(f32::INFINITY);
-
-                // Get centroids using iter().nth() - clippy warning suppressed as indexing would require bounds checking
-                #[allow(clippy::iter_nth)]
-                let c_selected = centroids.iter().nth(selected_idx).unwrap();
-                #[allow(clippy::iter_nth)]
-                let c_candidate = centroids.iter().nth(candidate_idx).unwrap();
+                let dist_candidate_to_v = distances_by_idx[candidate_idx];
+                let c_selected = centroids
+                    .get(selected_idx)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let c_candidate = centroids
+                    .get(candidate_idx)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
                 let dist_selected_to_candidate = l2_distance_sqr(c_selected, c_candidate);
 
                 // RNG rule: skip candidate if it's farther from v than selected is from candidate

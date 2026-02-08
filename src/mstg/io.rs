@@ -231,8 +231,14 @@ impl MstgIndex {
         let centroid_vecs: Vec<Vec<f32>> =
             posting_lists.iter().map(|p| p.centroid.clone()).collect();
 
-        let centroid_index =
-            CentroidIndex::build(centroid_vecs, centroid_ids, config.centroid_precision);
+        let centroid_index = CentroidIndex::build(
+            centroid_vecs,
+            centroid_ids,
+            config.centroid_precision,
+            config.hnsw_m,
+            config.hnsw_ef_construction,
+            config.metric,
+        );
 
         let directory = PostingListDirectory::new();
 
@@ -278,8 +284,14 @@ impl CentroidIndex {
 
         // Use hnsw_rs file_dump API
         let path_string = base_path.to_string();
-        hnsw.file_dump(&path_string)
-            .map_err(|e| format!("HNSW dump failed: {}", e))?;
+        match hnsw {
+            super::hnsw::HnswCache::L2(inner) => inner
+                .file_dump(&path_string)
+                .map_err(|e| format!("HNSW dump failed: {}", e))?,
+            super::hnsw::HnswCache::Dot(inner) => inner
+                .file_dump(&path_string)
+                .map_err(|e| format!("HNSW dump failed: {}", e))?,
+        };
 
         Ok(())
     }
@@ -304,21 +316,26 @@ impl CentroidIndex {
         // Load HNSW using hnsw_rs API
         let hnswio = HnswIo::new(dir, basename);
 
-        // Load with distance function
-        let hnsw: Hnsw<f32, DistL2> = hnswio
-            .load_hnsw_with_dist(DistL2 {})
-            .map_err(|e| format!("HNSW load failed: {}", e))?;
-
-        // SAFETY: We're converting the loaded HNSW to 'static lifetime
-        // This is safe because:
-        // 1. The HNSW owns its data (loaded from file)
-        // 2. It will live as long as the CentroidIndex
-        // 3. centroid_vecs is stable (in a Box)
-        let hnsw_static: Hnsw<'static, f32, DistL2> = unsafe { std::mem::transmute(hnsw) };
+        let hnsw_cache = match self.metric() {
+            crate::Metric::L2 => {
+                let hnsw: Hnsw<f32, DistL2> = hnswio
+                    .load_hnsw_with_dist(DistL2 {})
+                    .map_err(|e| format!("HNSW load failed: {}", e))?;
+                let hnsw_static: Hnsw<'static, f32, DistL2> = unsafe { std::mem::transmute(hnsw) };
+                super::hnsw::HnswCache::L2(hnsw_static)
+            }
+            crate::Metric::InnerProduct => {
+                let hnsw: Hnsw<f32, DistDot> = hnswio
+                    .load_hnsw_with_dist(DistDot {})
+                    .map_err(|e| format!("HNSW load failed: {}", e))?;
+                let hnsw_static: Hnsw<'static, f32, DistDot> = unsafe { std::mem::transmute(hnsw) };
+                super::hnsw::HnswCache::Dot(hnsw_static)
+            }
+        };
 
         // Update cache
         let mut cache = self.hnsw_cache.write();
-        *cache = Some(hnsw_static);
+        *cache = Some(hnsw_cache);
 
         Ok(())
     }

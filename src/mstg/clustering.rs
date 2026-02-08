@@ -9,20 +9,20 @@ use rand::prelude::*;
 /// A cluster of vectors with its centroid
 #[derive(Debug, Clone)]
 pub struct Cluster {
-    data: Vec<Vec<f32>>,
+    indices: Vec<usize>,
     centroid: Vec<f32>,
 }
 
 impl Cluster {
-    /// Create a cluster from data vectors
-    pub fn from_data(data: Vec<Vec<f32>>) -> Self {
-        let centroid = compute_centroid(&data);
-        Self { data, centroid }
+    /// Create a cluster from vector indices
+    pub fn from_indices(indices: Vec<usize>, data: &[Vec<f32>]) -> Self {
+        let centroid = compute_centroid(data, &indices);
+        Self { indices, centroid }
     }
 
-    /// Get reference to the data
-    pub fn data(&self) -> &[Vec<f32>] {
-        &self.data
+    /// Get reference to the indices
+    pub fn indices(&self) -> &[usize] {
+        &self.indices
     }
 
     /// Get reference to the centroid
@@ -32,7 +32,7 @@ impl Cluster {
 
     /// Get the number of vectors in this cluster
     pub fn size(&self) -> usize {
-        self.data.len()
+        self.indices.len()
     }
 }
 
@@ -61,7 +61,8 @@ impl HierarchicalClustering {
         }
 
         let mut rng = StdRng::seed_from_u64(42);
-        let mut active_clusters = vec![Cluster::from_data(data.to_vec())];
+        let root_indices: Vec<usize> = (0..data.len()).collect();
+        let mut active_clusters = vec![Cluster::from_indices(root_indices, data)];
         let mut final_clusters = Vec::new();
 
         println!(
@@ -77,15 +78,16 @@ impl HierarchicalClustering {
                 final_clusters.push(cluster);
             } else {
                 iteration += 1;
+                let split_k = self.branching_factor.min(cluster.size());
                 println!(
                     "  Iteration {}: Splitting cluster of size {} into {} subclusters",
                     iteration,
                     cluster.size(),
-                    self.branching_factor
+                    split_k
                 );
 
                 // Split using k-means
-                let subclusters = self.split_cluster(&cluster, &mut rng);
+                let subclusters = self.split_cluster(&cluster, data, &mut rng);
 
                 // Add subclusters to active queue
                 for subcluster in subclusters {
@@ -103,38 +105,89 @@ impl HierarchicalClustering {
     }
 
     /// Split a cluster into k subclusters using k-means
-    fn split_cluster(&self, cluster: &Cluster, rng: &mut StdRng) -> Vec<Cluster> {
-        let k = self.branching_factor;
-        let data = cluster.data();
+    fn split_cluster(
+        &self,
+        cluster: &Cluster,
+        data: &[Vec<f32>],
+        rng: &mut StdRng,
+    ) -> Vec<Cluster> {
+        let size = cluster.size();
+        let k = self.branching_factor.min(size);
+        if size <= 1 {
+            return vec![cluster.clone()];
+        }
+        // Fast path: if size is small, avoid expensive k-means.
+        if size <= k {
+            return cluster
+                .indices()
+                .iter()
+                .map(|&idx| Cluster::from_indices(vec![idx], data))
+                .collect();
+        }
+        if size <= k * 2 {
+            return self.split_cluster_round_robin(cluster, data, k, rng);
+        }
+        let cluster_data = collect_vectors(data, cluster.indices());
 
         // Run k-means on this cluster
-        let kmeans_result = run_kmeans(data, k, self.max_iterations, rng);
+        let max_iter = if size <= 1_000 {
+            self.max_iterations.min(30)
+        } else {
+            self.max_iterations
+        };
+        let kmeans_result = run_kmeans(&cluster_data, k, max_iter, rng);
 
         // Group vectors by assignment
-        let mut subcluster_data: Vec<Vec<Vec<f32>>> = vec![Vec::new(); k];
+        let mut subcluster_indices: Vec<Vec<usize>> = vec![Vec::new(); k];
         for (vec_idx, &cluster_id) in kmeans_result.assignments.iter().enumerate() {
-            subcluster_data[cluster_id].push(data[vec_idx].clone());
+            let global_idx = cluster.indices()[vec_idx];
+            subcluster_indices[cluster_id].push(global_idx);
         }
 
         // Apply balance constraint if needed
         if self.balance_weight > 0.0 {
-            subcluster_data = self.balance_clusters(subcluster_data, &kmeans_result.centroids);
+            subcluster_indices =
+                self.balance_clusters(subcluster_indices, data, &kmeans_result.centroids);
         }
 
         // Create clusters from grouped data
-        subcluster_data
+        subcluster_indices
             .into_iter()
-            .filter(|data| !data.is_empty())
-            .map(Cluster::from_data)
+            .filter(|indices| !indices.is_empty())
+            .map(|indices| Cluster::from_indices(indices, data))
+            .collect()
+    }
+
+    /// Fast split for tiny clusters: shuffle and round-robin assign.
+    fn split_cluster_round_robin(
+        &self,
+        cluster: &Cluster,
+        data: &[Vec<f32>],
+        k: usize,
+        rng: &mut StdRng,
+    ) -> Vec<Cluster> {
+        let mut indices: Vec<usize> = cluster.indices().to_vec();
+        indices.shuffle(rng);
+
+        let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); k];
+        for (i, idx) in indices.into_iter().enumerate() {
+            buckets[i % k].push(idx);
+        }
+
+        buckets
+            .into_iter()
+            .filter(|indices| !indices.is_empty())
+            .map(|indices| Cluster::from_indices(indices, data))
             .collect()
     }
 
     /// Balance cluster sizes by moving vectors between clusters
     fn balance_clusters(
         &self,
-        mut clusters: Vec<Vec<Vec<f32>>>,
+        mut clusters: Vec<Vec<usize>>,
+        data: &[Vec<f32>],
         centroids: &[Vec<f32>],
-    ) -> Vec<Vec<Vec<f32>>> {
+    ) -> Vec<Vec<usize>> {
         let total_size: usize = clusters.iter().map(|c| c.len()).sum();
         let k = clusters.len();
         let target_size = total_size / k;
@@ -171,10 +224,10 @@ impl HierarchicalClustering {
 
             // Find vector in over_i that's closest to under_i's centroid
             if let Some(closest_idx) =
-                self.find_closest_vector_to_centroid(&clusters[over_i], &centroids[under_i])
+                self.find_closest_vector_to_centroid(&clusters[over_i], data, &centroids[under_i])
             {
-                let vec = clusters[over_i].remove(closest_idx);
-                clusters[under_i].push(vec);
+                let vec_id = clusters[over_i].remove(closest_idx);
+                clusters[under_i].push(vec_id);
             } else {
                 break;
             }
@@ -186,18 +239,19 @@ impl HierarchicalClustering {
     /// Find the index of the vector closest to the given centroid
     fn find_closest_vector_to_centroid(
         &self,
-        vectors: &[Vec<f32>],
+        vector_indices: &[usize],
+        data: &[Vec<f32>],
         centroid: &[f32],
     ) -> Option<usize> {
-        if vectors.is_empty() {
+        if vector_indices.is_empty() {
             return None;
         }
 
         let mut best_idx = 0;
-        let mut best_dist = l2_distance_sqr(&vectors[0], centroid);
+        let mut best_dist = l2_distance_sqr(&data[vector_indices[0]], centroid);
 
-        for (idx, vec) in vectors.iter().enumerate().skip(1) {
-            let dist = l2_distance_sqr(vec, centroid);
+        for (idx, &vec_id) in vector_indices.iter().enumerate().skip(1) {
+            let dist = l2_distance_sqr(&data[vec_id], centroid);
             if dist < best_dist {
                 best_dist = dist;
                 best_idx = idx;
@@ -209,26 +263,35 @@ impl HierarchicalClustering {
 }
 
 /// Compute the centroid of a set of vectors
-fn compute_centroid(data: &[Vec<f32>]) -> Vec<f32> {
-    if data.is_empty() {
+fn compute_centroid(data: &[Vec<f32>], indices: &[usize]) -> Vec<f32> {
+    if indices.is_empty() {
         return Vec::new();
     }
 
-    let dim = data[0].len();
+    let dim = data[indices[0]].len();
     let mut centroid = vec![0.0; dim];
 
-    for vec in data {
+    for &idx in indices {
+        let vec = &data[idx];
         for (i, &val) in vec.iter().enumerate() {
             centroid[i] += val;
         }
     }
 
-    let n = data.len() as f32;
+    let n = indices.len() as f32;
     for val in &mut centroid {
         *val /= n;
     }
 
     centroid
+}
+
+fn collect_vectors(data: &[Vec<f32>], indices: &[usize]) -> Vec<Vec<f32>> {
+    let mut out = Vec::with_capacity(indices.len());
+    for &idx in indices {
+        out.push(data[idx].clone());
+    }
+    out
 }
 
 #[cfg(test)]
@@ -251,7 +314,8 @@ mod tests {
             vec![2.0, 2.0],
         ];
 
-        let centroid = compute_centroid(&data);
+        let indices: Vec<usize> = (0..data.len()).collect();
+        let centroid = compute_centroid(&data, &indices);
         assert_eq!(centroid.len(), 2);
         assert!((centroid[0] - 1.0).abs() < 1e-5);
         assert!((centroid[1] - 1.0).abs() < 1e-5);
@@ -260,10 +324,11 @@ mod tests {
     #[test]
     fn test_cluster_creation() {
         let data = vec![vec![1.0, 2.0], vec![3.0, 4.0]];
-        let cluster = Cluster::from_data(data);
+        let indices: Vec<usize> = (0..data.len()).collect();
+        let cluster = Cluster::from_indices(indices, &data);
 
         assert_eq!(cluster.size(), 2);
-        assert_eq!(cluster.data().len(), 2);
+        assert_eq!(cluster.indices().len(), 2);
         assert_eq!(cluster.centroid().len(), 2);
         assert!((cluster.centroid()[0] - 2.0).abs() < 1e-5);
         assert!((cluster.centroid()[1] - 3.0).abs() < 1e-5);
