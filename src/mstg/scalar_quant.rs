@@ -11,7 +11,7 @@ pub trait QuantizedVector: Clone + Send + Sync + Sized {
 /// BF16 (Brain Float16) quantized vector
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BF16Vector {
-    data: Vec<u16>,
+    pub(crate) data: Vec<u16>,
 }
 
 impl QuantizedVector for BF16Vector {
@@ -41,7 +41,7 @@ impl QuantizedVector for BF16Vector {
 /// FP32 (no quantization)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FP32Vector {
-    data: Vec<f32>,
+    pub(crate) data: Vec<f32>,
 }
 
 impl QuantizedVector for FP32Vector {
@@ -61,6 +61,91 @@ impl QuantizedVector for FP32Vector {
 
     fn memory_size(&self) -> usize {
         self.data.len() * 4
+    }
+}
+
+/// FP16 quantized vector
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FP16Vector {
+    pub(crate) data: Vec<half::f16>,
+}
+
+impl QuantizedVector for FP16Vector {
+    fn quantize(vector: &[f32]) -> Self {
+        let data = vector.iter().map(|&x| half::f16::from_f32(x)).collect();
+        Self { data }
+    }
+
+    fn dequantize(&self) -> Vec<f32> {
+        self.data.iter().map(|&x| x.to_f32()).collect()
+    }
+
+    fn distance_to(&self, other: &Self) -> f32 {
+        let mut sum = 0.0f32;
+        for (a, b) in self.data.iter().zip(&other.data) {
+            let diff = a.to_f32() - b.to_f32();
+            sum += diff * diff;
+        }
+        sum
+    }
+
+    fn memory_size(&self) -> usize {
+        self.data.len() * 2
+    }
+}
+
+/// INT8 quantized vector (requires training for scale/offset)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct INT8Vector {
+    pub(crate) data: Vec<i8>,
+}
+
+impl INT8Vector {
+    pub fn quantize_with_params(vector: &[f32], scale: f32, offset: f32) -> Self {
+        let data = vector
+            .iter()
+            .map(|&x| {
+                let q = (x - offset) / scale;
+                let q_clamped = q.max(-128.0).min(127.0);
+                q_clamped.round() as i8
+            })
+            .collect();
+        Self { data }
+    }
+
+    pub fn dequantize_with_params(&self, scale: f32, offset: f32) -> Vec<f32> {
+        self.data
+            .iter()
+            .map(|&x| (x as f32 * scale) + offset)
+            .collect()
+    }
+
+    pub fn distance_to_with_params(&self, other: &Self, scale: f32) -> f32 {
+        let mut sum = 0.0f32;
+        for (a, b) in self.data.iter().zip(&other.data) {
+            let diff = (*a as i32 - *b as i32) as f32;
+            sum += diff * diff;
+        }
+        sum * scale * scale
+    }
+}
+
+impl QuantizedVector for INT8Vector {
+    fn quantize(_vector: &[f32]) -> Self {
+        // Fallback or panic because it needs offset/scale.
+        panic!("INT8Vector requires scale and offset for quantization");
+    }
+
+    fn dequantize(&self) -> Vec<f32> {
+        panic!("INT8Vector requires scale and offset for dequantization");
+    }
+
+    fn distance_to(&self, _other: &Self) -> f32 {
+        panic!("INT8Vector requires scale and offset for distance computation");
+    }
+
+    fn memory_size(&self) -> usize {
+        self.data.len()
     }
 }
 

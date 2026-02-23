@@ -1,372 +1,104 @@
 //! Main MSTG index structure
 
 use super::*;
-use rayon::prelude::*;
+
+/// Source of posting lists (memory or mmapped disk)
+pub enum PostingDataSource {
+    InMemory(Vec<PostingList>),
+    Mmap(memmap2::Mmap, u64),
+}
+
+impl PostingDataSource {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::InMemory(v) => v.len(),
+            Self::Mmap(_, _) => usize::MAX, // Can't know without directory, assume not empty
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, PostingList> {
+        match self {
+            Self::InMemory(v) => v.iter(),
+            Self::Mmap(_, _) => [].iter(), // Placeholder for Mmap iteration
+        }
+    }
+
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, PostingList> {
+        match self {
+            Self::InMemory(v) => v.iter_mut(),
+            Self::Mmap(_, _) => [].iter_mut(), // Placeholder for Mmap iteration
+        }
+    }
+
+    pub fn with_posting_list<F, R>(
+        &self,
+        cid: u32,
+        directory: &PostingListDirectory,
+        f: F,
+    ) -> Option<R>
+    where
+        F: FnOnce(&PostingList) -> R,
+    {
+        match self {
+            Self::InMemory(v) => v.get(cid as usize).map(f),
+            Self::Mmap(mmap, base_offset) => {
+                if let Some(entry) = directory.entries.get(cid as usize) {
+                    let prefix_start = *base_offset as usize + entry.disk_offset as usize;
+                    if prefix_start + 8 <= mmap.len() {
+                        let mut len_bytes = [0u8; 8];
+                        len_bytes.copy_from_slice(&mmap[prefix_start..prefix_start + 8]);
+                        let actual_len = u64::from_le_bytes(len_bytes) as usize;
+
+                        let start = prefix_start + 8;
+                        let end = start + actual_len;
+
+                        if end <= mmap.len() {
+                            if let Ok(mut plist) =
+                                bincode::deserialize::<PostingList>(&mmap[start..end])
+                            {
+                                plist.padded_dim = plist.centroid.len();
+                                plist.build_batch_layout();
+                                return Some(f(&plist));
+                            }
+                        }
+                    }
+                }
+                None
+            }
+        }
+    }
+}
 
 /// Main MSTG (Multi-Scale Tree Graph) index
 pub struct MstgIndex {
     pub config: MstgConfig,
     pub centroid_index: CentroidIndex,
-    pub posting_lists: Vec<PostingList>,
+    pub posting_lists: PostingDataSource,
     pub directory: PostingListDirectory,
 }
 
 impl MstgIndex {
     /// Build an MSTG index from data
     pub fn build(data: &[Vec<f32>], config: MstgConfig) -> Result<Self, String> {
-        if data.is_empty() {
-            return Err("Cannot build index from empty data".to_string());
-        }
-
-        println!("Building MSTG index for {} vectors", data.len());
-
-        // Step 1: Hierarchical balanced clustering
-        println!("Step 1: Hierarchical balanced clustering...");
-        let clustering = HierarchicalClustering::new(
-            config.max_posting_size,
-            config.branching_factor,
-            config.balance_weight,
-        );
-        let clusters = clustering.cluster(data);
-        println!("  Created {} clusters", clusters.len());
-
-        // Step 2: Closure assignment
-        println!("Step 2: Closure assignment with RNG rule...");
-        let centroids: Vec<Vec<f32>> = clusters.iter().map(|c| c.centroid().to_vec()).collect();
-
-        let assigner = ClosureAssigner::new(config.closure_epsilon, config.max_replicas);
-
-        let cluster_assignments: Vec<Vec<usize>> = data
-            .par_iter()
-            .map(|v| assigner.assign(v, &centroids))
-            .collect();
-
-        // Count total assignments for statistics
-        let total_assignments: usize = cluster_assignments.iter().map(|a| a.len()).sum();
-        let replication_factor = total_assignments as f32 / data.len() as f32;
-        println!("  Average replication factor: {:.2}", replication_factor);
-
-        // Step 3: Create posting lists with RaBitQ quantization
-        println!("Step 3: Creating and quantizing posting lists...");
-        let posting_lists: Vec<PostingList> = clusters
-            .par_iter()
-            .enumerate()
-            .map(|(cluster_id, cluster)| {
-                let mut plist = PostingList::new(cluster_id as u32, cluster.centroid().to_vec());
-
-                // Collect vectors assigned to this cluster
-                let mut assigned_vectors = Vec::new();
-                let mut assigned_ids = Vec::new();
-
-                for (vec_id, assignments) in cluster_assignments.iter().enumerate() {
-                    if assignments.contains(&cluster_id) {
-                        assigned_vectors.push(data[vec_id].clone());
-                        assigned_ids.push(vec_id as u64);
-                    }
-                }
-
-                // Quantize if there are vectors
-                if !assigned_vectors.is_empty() {
-                    plist
-                        .quantize_vectors(
-                            &assigned_vectors,
-                            &assigned_ids,
-                            config.rabitq_bits,
-                            config.metric,
-                            config.faster_config,
-                        )
-                        .unwrap_or_else(|e| {
-                            eprintln!(
-                                "Warning: Quantization failed for cluster {}: {}",
-                                cluster_id, e
-                            );
-                        });
-                }
-
-                plist
-            })
-            .collect();
-
-        println!(
-            "  Created {} posting lists with {} total vectors",
-            posting_lists.len(),
-            posting_lists.iter().map(|p| p.len()).sum::<usize>()
-        );
-
-        // Build FastScan batch layout for each posting list
-        println!("Step 3.5: Building FastScan batch layouts...");
-        let posting_lists: Vec<PostingList> = posting_lists
-            .into_par_iter()
-            .map(|mut plist| {
-                plist.build_batch_layout();
-                plist
-            })
-            .collect();
-
-        // Step 4: Build centroid index
-        println!("Step 4: Building centroid index...");
-        let centroid_reps: Vec<Vec<f32>> =
-            posting_lists.iter().map(|p| p.centroid.clone()).collect();
-        let centroid_ids: Vec<u32> = (0..posting_lists.len() as u32).collect();
-
-        let centroid_index =
-            CentroidIndex::build(centroid_reps, centroid_ids, config.centroid_precision);
-
-        println!(
-            "  Built centroid index with {} centroids ({} precision)",
-            centroid_index.len(),
-            match config.centroid_precision {
-                ScalarPrecision::FP32 => "FP32",
-                ScalarPrecision::BF16 => "BF16",
-                _ => "Other",
-            }
-        );
-
-        // Step 5: Create metadata directory
-        let directory = PostingListDirectory::new();
-
-        println!("MSTG index build complete");
-        println!(
-            "  Memory usage estimate: ~{:.2} MB",
-            Self::estimate_memory_mb(&centroid_index, &posting_lists)
-        );
-
-        Ok(Self {
-            config,
-            centroid_index,
-            posting_lists,
-            directory,
-        })
+        MstgBuilder::new(data, config).build()
     }
 
     /// Estimate total memory usage in MB
-    fn estimate_memory_mb(centroid_index: &CentroidIndex, posting_lists: &[PostingList]) -> f32 {
+    pub(crate) fn estimate_memory_mb(
+        centroid_index: &CentroidIndex,
+        posting_lists: &PostingDataSource,
+    ) -> f32 {
         let centroid_mem = centroid_index.memory_usage();
-        let posting_mem: usize = posting_lists.iter().map(|p| p.memory_size()).sum();
+        let posting_mem: usize = match posting_lists {
+            PostingDataSource::InMemory(v) => v.iter().map(|p| p.memory_size()).sum(),
+            PostingDataSource::Mmap(_, _) => 0,
+        };
         ((centroid_mem + posting_mem) as f32) / (1024.0 * 1024.0)
     }
-
-    /// Search for k nearest neighbors using FastScan batch distance computation
-    pub fn search(&self, query: &[f32], params: &SearchParams) -> Vec<SearchResult> {
-        use crate::fastscan::QueryContext as FastScanQueryContext;
-
-        // Step 1: Find candidate centroids
-        let centroid_candidates = self.centroid_index.search(query, params.ef_search);
-
-        // Step 2: Dynamic pruning
-        let selected_centroids = self.dynamic_prune(&centroid_candidates, params.pruning_epsilon);
-
-        // Step 3: Create query context once
-        let ex_bits = self.config.rabitq_bits.saturating_sub(1);
-        let mut query_ctx = FastScanQueryContext::new(query.to_vec(), ex_bits);
-
-        // Build LUT once for all posting lists (if dimensions match)
-        if !self.posting_lists.is_empty() {
-            let padded_dim = self.posting_lists[0].padded_dim;
-            query_ctx.build_lut(padded_dim);
-        }
-
-        // Step 4: Search posting lists with FastScan batch distance computation
-        let mut all_candidates: Vec<(u64, f32)> = selected_centroids
-            .par_iter()
-            .flat_map(|&cid| {
-                let plist = &self.posting_lists[cid as usize];
-
-                // Skip empty posting lists
-                if plist.vectors.is_empty() {
-                    return Vec::new();
-                }
-
-                // Use FastScan batch distance computation
-                self.search_posting_list_fastscan(&query_ctx, plist, &plist.batch_data)
-            })
-            .collect();
-
-        // Step 5: Partial sort to get top-k (faster than full sort)
-        // Use select_nth_unstable to partition so smallest distances are at front
-        let k = params.top_k.min(all_candidates.len());
-        if k > 0 && k < all_candidates.len() {
-            // Partition: first k elements are the smallest distances
-            all_candidates.select_nth_unstable_by(k, |a, b| {
-                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            // Sort only the top-k elements
-            all_candidates[..k].sort_unstable_by(|a, b| {
-                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-            });
-        } else {
-            // k >= len: sort all (fallback)
-            all_candidates.sort_unstable_by(|a, b| {
-                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-            });
-        }
-        all_candidates.truncate(k);
-
-        all_candidates
-            .into_iter()
-            .map(|(id, dist)| SearchResult {
-                vector_id: id as usize,
-                distance: dist,
-            })
-            .collect()
-    }
-
-    /// Search a posting list using FastScan batch distance computation
-    #[inline]
-    fn search_posting_list_fastscan(
-        &self,
-        query_ctx: &crate::fastscan::QueryContext,
-        plist: &PostingList,
-        batch_data: &crate::fastscan::BatchData,
-    ) -> Vec<(u64, f32)> {
-        use crate::math::{dot, l2_distance_sqr};
-        use crate::simd;
-
-        let query = &query_ctx.query;
-        let padded_dim = plist.padded_dim;
-
-        // Compute g_add (query-to-centroid distance)
-        let g_add = match self.config.metric {
-            crate::Metric::L2 => l2_distance_sqr(query, &plist.centroid),
-            crate::Metric::InnerProduct => -dot(query, &plist.centroid),
-        };
-
-        let num_batches = plist.num_complete_batches();
-        let num_remainder = plist.num_remainder_vectors();
-        let total_batches = if num_remainder > 0 {
-            num_batches + 1
-        } else {
-            num_batches
-        };
-
-        let mut results = Vec::with_capacity(plist.vectors.len());
-        let use_highacc = padded_dim > 2048;
-
-        for batch_idx in 0..total_batches {
-            let batch_start = batch_idx * simd::FASTSCAN_BATCH_SIZE;
-            let batch_end = (batch_start + simd::FASTSCAN_BATCH_SIZE).min(plist.vectors.len());
-            let actual_batch_size = batch_end - batch_start;
-
-            // Get batch parameters
-            let batch_f_add = batch_data.batch_f_add(batch_idx);
-            let batch_f_rescale = batch_data.batch_f_rescale(batch_idx);
-
-            // Allocate output arrays
-            let mut ip_x0_qr_values = [0.0f32; simd::FASTSCAN_BATCH_SIZE];
-            let mut est_distances = [0.0f32; simd::FASTSCAN_BATCH_SIZE];
-            let mut lower_bounds = [0.0f32; simd::FASTSCAN_BATCH_SIZE];
-
-            if use_highacc {
-                // High-accuracy mode using i32 accumulators
-                if let Some(ref lut_ha) = query_ctx.lut_highacc {
-                    let mut accu_res_i32 = [0i32; simd::FASTSCAN_BATCH_SIZE];
-                    simd::accumulate_batch_highacc_avx2(
-                        batch_data.batch_bin_codes(batch_idx),
-                        &lut_ha.lut_low8,
-                        &lut_ha.lut_high8,
-                        padded_dim,
-                        &mut accu_res_i32,
-                    );
-
-                    simd::compute_batch_distances_i32(
-                        &accu_res_i32,
-                        lut_ha.delta,
-                        lut_ha.sum_vl_lut,
-                        batch_f_add,
-                        batch_f_rescale,
-                        &[0.0f32; simd::FASTSCAN_BATCH_SIZE],
-                        g_add,
-                        0.0,
-                        query_ctx.k1x_sum_q,
-                        &mut ip_x0_qr_values,
-                        &mut est_distances,
-                        &mut lower_bounds,
-                    );
-                }
-            } else if let Some(ref lut) = query_ctx.lut {
-                // Standard mode using i16 accumulators
-                let mut accu_res = [0u16; simd::FASTSCAN_BATCH_SIZE];
-                simd::accumulate_batch_avx2(
-                    batch_data.batch_bin_codes(batch_idx),
-                    &lut.lut_i8,
-                    padded_dim,
-                    &mut accu_res,
-                );
-
-                simd::compute_batch_distances_u16(
-                    &accu_res,
-                    lut.delta,
-                    lut.sum_vl_lut,
-                    batch_f_add,
-                    batch_f_rescale,
-                    &[0.0f32; simd::FASTSCAN_BATCH_SIZE],
-                    g_add,
-                    0.0,
-                    query_ctx.k1x_sum_q,
-                    &mut ip_x0_qr_values,
-                    &mut est_distances,
-                    &mut lower_bounds,
-                );
-            }
-
-            // Collect results for this batch
-            for (i, &distance) in est_distances.iter().enumerate().take(actual_batch_size) {
-                let global_idx = batch_start + i;
-                let vector_id = plist.vectors[global_idx].vector_id;
-
-                if distance.is_finite() {
-                    // For L2 metric, clamp negative distances to 0 (due to quantization approximation errors)
-                    // For InnerProduct, negative values are valid (higher similarity)
-                    let clamped_distance = if self.config.metric == crate::Metric::L2 {
-                        distance.max(0.0)
-                    } else {
-                        distance
-                    };
-                    results.push((vector_id, clamped_distance));
-                }
-            }
-        }
-
-        results
-    }
-
-    /// Batch search for multiple queries (parallel)
-    ///
-    /// This is much faster than calling search() in a loop because it
-    /// parallelizes across queries using Rayon.
-    ///
-    /// # Performance
-    /// Expected speedup: 4-8x on typical CPUs (depends on core count)
-    pub fn batch_search(
-        &self,
-        queries: &[Vec<f32>],
-        params: &SearchParams,
-    ) -> Vec<Vec<SearchResult>> {
-        queries.par_iter().map(|q| self.search(q, params)).collect()
-    }
-
-    /// Apply dynamic pruning to centroid candidates
-    fn dynamic_prune(&self, candidates: &[(u32, f32)], epsilon: f32) -> Vec<u32> {
-        if candidates.is_empty() {
-            return Vec::new();
-        }
-
-        let closest_dist = candidates[0].1;
-        let threshold = closest_dist * (1.0 + epsilon);
-
-        candidates
-            .iter()
-            .filter(|(_, dist)| *dist <= threshold)
-            .map(|(id, _)| *id)
-            .collect()
-    }
-}
-
-/// Search result
-#[derive(Debug, Clone)]
-pub struct SearchResult {
-    pub vector_id: usize,
-    pub distance: f32,
 }
 
 #[cfg(test)]
@@ -416,5 +148,42 @@ mod tests {
 
         // First result should be the query itself (or very close)
         assert!(results[0].distance < 0.1);
+    }
+
+    #[test]
+    fn test_memory_differences_scalar_quantization() {
+        use crate::mstg::config::ScalarPrecision;
+
+        // Generate larger dummy data to show memory differences
+        let data = generate_test_data(500, 128);
+
+        // Build with FP32
+        let mut config_fp32 = MstgConfig::default();
+        config_fp32.centroid_precision = ScalarPrecision::FP32;
+        let index_fp32 = MstgIndex::build(&data, config_fp32).unwrap();
+        let mem_fp32 =
+            MstgIndex::estimate_memory_mb(&index_fp32.centroid_index, &index_fp32.posting_lists);
+
+        // Build with BF16
+        let mut config_bf16 = MstgConfig::default();
+        config_bf16.centroid_precision = ScalarPrecision::BF16;
+        let index_bf16 = MstgIndex::build(&data, config_bf16).unwrap();
+        let mem_bf16 =
+            MstgIndex::estimate_memory_mb(&index_bf16.centroid_index, &index_bf16.posting_lists);
+
+        // Build with INT8
+        let mut config_int8 = MstgConfig::default();
+        config_int8.centroid_precision = ScalarPrecision::INT8;
+        let index_int8 = MstgIndex::build(&data, config_int8).unwrap();
+        let mem_int8 =
+            MstgIndex::estimate_memory_mb(&index_int8.centroid_index, &index_int8.posting_lists);
+
+        // Compare HNSW memory
+        println!("FP32 Memory: {} MB", mem_fp32);
+        println!("BF16 Memory: {} MB", mem_bf16);
+        println!("INT8 Memory: {} MB", mem_int8);
+
+        assert!(mem_int8 < mem_bf16);
+        assert!(mem_bf16 < mem_fp32);
     }
 }

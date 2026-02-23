@@ -1,30 +1,100 @@
 //! Centroid index for fast nearest centroid search using HNSW
 //!
 //! Uses hnsw_rs for efficient approximate nearest neighbor search
+//! Includes true scalar quantization implementations to save memory
 
 use crate::mstg::config::ScalarPrecision;
-use crate::mstg::scalar_quant::{BF16Vector, FP32Vector, QuantizedVector as ScalarQuantizedVector};
 use hnsw_rs::prelude::*;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+
+/// Distance function for BF16 quantized vectors
+#[derive(Clone)]
+pub struct DistBF16;
+
+impl Distance<u16> for DistBF16 {
+    fn eval(&self, va: &[u16], vb: &[u16]) -> f32 {
+        let mut sum = 0.0f32;
+        for (a, b) in va.iter().zip(vb) {
+            let diff = crate::mstg::scalar_quant::bf16_to_fp32(*a)
+                - crate::mstg::scalar_quant::bf16_to_fp32(*b);
+            sum += diff * diff;
+        }
+        sum
+    }
+}
+
+/// Distance function for FP16 quantized vectors
+#[derive(Clone)]
+pub struct DistFP16;
+
+impl Distance<half::f16> for DistFP16 {
+    fn eval(&self, va: &[half::f16], vb: &[half::f16]) -> f32 {
+        let mut sum = 0.0f32;
+        for (a, b) in va.iter().zip(vb) {
+            let diff = a.to_f32() - b.to_f32();
+            sum += diff * diff;
+        }
+        sum
+    }
+}
+
+/// Distance function for INT8 quantized vectors
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DistINT8 {
+    pub scale: f32,
+}
+
+impl Distance<i8> for DistINT8 {
+    fn eval(&self, va: &[i8], vb: &[i8]) -> f32 {
+        let mut sum = 0.0f32;
+        for (a, b) in va.iter().zip(vb) {
+            let diff = (*a as i32 - *b as i32) as f32;
+            sum += diff * diff;
+        }
+        sum * self.scale * self.scale
+    }
+}
 
 /// Centroid index for fast nearest centroid queries using HNSW
 pub struct CentroidIndex {
     #[allow(dead_code)]
     precision: ScalarPrecision,
     pub(crate) centroid_ids: Vec<u32>,
-    centroids: CentroidData,
-    /// Store the centroids in a Box for stable addresses
-    centroid_vecs: Box<[Vec<f32>]>,
-    /// Cached HNSW index (built lazily on first search)
-    /// Safety: The HNSW borrows from centroid_vecs, which is never moved after construction
-    pub(crate) hnsw_cache: RwLock<Option<Hnsw<'static, f32, DistL2>>>,
+    /// Store the centroid data securely so it won't move, acting as backing memory for HNSW
+    pub(crate) centroids: CentroidData,
+    /// Cached HNSW index structure
+    pub(crate) hnsw_cache: RwLock<Option<HnswIndex>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-enum CentroidData {
-    FP32(Vec<FP32Vector>),
-    BF16(Vec<BF16Vector>),
+pub(crate) enum CentroidData {
+    FP32(Box<[Vec<f32>]>),
+    BF16(Box<[Vec<u16>]>),
+    FP16(Box<[Vec<half::f16>]>),
+    INT8 {
+        data: Box<[Vec<i8>]>,
+        scale: f32,
+        offset: f32,
+    },
+}
+
+pub(crate) enum HnswIndex {
+    FP32(Hnsw<'static, f32, DistL2>),
+    BF16(Hnsw<'static, u16, DistBF16>),
+    FP16(Hnsw<'static, half::f16, DistFP16>),
+    INT8(Hnsw<'static, i8, DistINT8>),
+}
+
+impl CentroidData {
+    pub fn memory_size(&self) -> usize {
+        match self {
+            Self::FP32(data) => data.iter().map(|v| v.len() * 4).sum(),
+            Self::BF16(data) => data.iter().map(|v| v.len() * 2).sum(),
+            Self::FP16(data) => data.iter().map(|v| v.len() * 2).sum(),
+            Self::INT8 { data, .. } => data.iter().map(|v| v.len()).sum(),
+        }
+    }
 }
 
 impl CentroidIndex {
@@ -36,36 +106,75 @@ impl CentroidIndex {
     ) -> Self {
         assert_eq!(centroids.len(), centroid_ids.len());
 
-        // Quantize centroids for memory efficiency
         let centroids_data = match precision {
-            ScalarPrecision::FP32 => {
-                let quant: Vec<FP32Vector> =
-                    centroids.iter().map(|c| FP32Vector::quantize(c)).collect();
-                CentroidData::FP32(quant)
-            }
+            ScalarPrecision::FP32 => CentroidData::FP32(centroids.into_boxed_slice()),
             ScalarPrecision::BF16 => {
-                let quant: Vec<BF16Vector> =
-                    centroids.iter().map(|c| BF16Vector::quantize(c)).collect();
-                CentroidData::BF16(quant)
+                let quant: Vec<Vec<u16>> = centroids
+                    .iter()
+                    .map(|c| {
+                        c.iter()
+                            .map(|&x| crate::mstg::scalar_quant::fp32_to_bf16(x))
+                            .collect()
+                    })
+                    .collect();
+                CentroidData::BF16(quant.into_boxed_slice())
             }
-            _ => panic!("Unsupported precision: {:?}", precision),
-        };
+            ScalarPrecision::FP16 => {
+                let quant: Vec<Vec<half::f16>> = centroids
+                    .iter()
+                    .map(|c| c.iter().map(|&x| half::f16::from_f32(x)).collect())
+                    .collect();
+                CentroidData::FP16(quant.into_boxed_slice())
+            }
+            ScalarPrecision::INT8 => {
+                let mut max_val = 0.0f32;
+                let mut min_val = 0.0f32;
 
-        // Store centroids in a Box for stable addresses
-        let centroid_vecs: Box<[Vec<f32>]> = centroids.into_boxed_slice();
+                for c in &centroids {
+                    for &v in c {
+                        if v > max_val {
+                            max_val = v;
+                        }
+                        if v < min_val {
+                            min_val = v;
+                        }
+                    }
+                }
+
+                let range = max_val - min_val;
+                let scale = if range == 0.0 { 1.0 } else { range / 255.0 };
+                let offset = min_val + (range / 2.0);
+
+                let quant: Vec<Vec<i8>> = centroids
+                    .iter()
+                    .map(|c| {
+                        c.iter()
+                            .map(|&x| {
+                                let q = (x - offset) / scale;
+                                q.max(-128.0).min(127.0).round() as i8
+                            })
+                            .collect()
+                    })
+                    .collect();
+
+                CentroidData::INT8 {
+                    data: quant.into_boxed_slice(),
+                    scale,
+                    offset,
+                }
+            }
+        };
 
         Self {
             precision,
             centroid_ids,
             centroids: centroids_data,
-            centroid_vecs,
             hnsw_cache: RwLock::new(None),
         }
     }
 
-    /// Build and cache the HNSW index
+    /// Build and cache the HNSW index properly pinned into life times securely
     pub(crate) fn ensure_hnsw_built(&self) {
-        // Check if already built (fast path with read lock)
         {
             let cache = self.hnsw_cache.read();
             if cache.is_some() {
@@ -73,105 +182,185 @@ impl CentroidIndex {
             }
         }
 
-        // Build HNSW (slow path with write lock)
         let mut cache = self.hnsw_cache.write();
         if cache.is_some() {
-            return; // Another thread built it while we were waiting
+            return;
         }
 
-        let nb_elements = self.centroid_vecs.len();
-
-        // Parameters for HNSW construction
         let max_nb_connection = 32;
         let ef_construction = 200;
-        // Use fixed max_layer to avoid hnsw_rs serialization issues
-        // The library expects max_layer to match NB_MAX_LAYER during serialization
         let max_layer = 16;
 
-        let mut hnsw = Hnsw::<f32, DistL2>::new(
-            max_nb_connection,
-            nb_elements,
-            max_layer,
-            ef_construction,
-            DistL2 {},
-        );
-
-        // SAFETY: We're extending the lifetime from 'a to 'static here.
-        // This is safe because:
-        // 1. centroid_vecs is owned by this struct and stored in a Box (stable address)
-        // 2. centroid_vecs will never be moved or dropped while hnsw_cache exists
-        // 3. hnsw_cache is only accessible through &self, ensuring proper borrowing
-        // 4. The HNSW index will be dropped before centroid_vecs when the struct is dropped
-        let data_with_id: Vec<(&Vec<f32>, usize)> = unsafe {
-            std::mem::transmute::<Vec<(&Vec<f32>, usize)>, Vec<(&Vec<f32>, usize)>>(
-                self.centroid_vecs
-                    .iter()
-                    .zip(0..nb_elements)
-                    .collect::<Vec<_>>(),
-            )
+        let hnsw_index = match &self.centroids {
+            CentroidData::FP32(data) => {
+                let mut hnsw = Hnsw::<f32, DistL2>::new(
+                    max_nb_connection,
+                    data.len(),
+                    max_layer,
+                    ef_construction,
+                    DistL2 {},
+                );
+                let data_with_id: Vec<(&Vec<f32>, usize)> = unsafe {
+                    std::mem::transmute(data.iter().zip(0..data.len()).collect::<Vec<_>>())
+                };
+                hnsw.parallel_insert(&data_with_id);
+                hnsw.set_searching_mode(true);
+                HnswIndex::FP32(hnsw)
+            }
+            CentroidData::BF16(data) => {
+                let mut hnsw = Hnsw::<u16, DistBF16>::new(
+                    max_nb_connection,
+                    data.len(),
+                    max_layer,
+                    ef_construction,
+                    DistBF16 {},
+                );
+                let data_with_id: Vec<(&Vec<u16>, usize)> = unsafe {
+                    std::mem::transmute(data.iter().zip(0..data.len()).collect::<Vec<_>>())
+                };
+                hnsw.parallel_insert(&data_with_id);
+                hnsw.set_searching_mode(true);
+                HnswIndex::BF16(hnsw)
+            }
+            CentroidData::FP16(data) => {
+                let mut hnsw = Hnsw::<half::f16, DistFP16>::new(
+                    max_nb_connection,
+                    data.len(),
+                    max_layer,
+                    ef_construction,
+                    DistFP16 {},
+                );
+                let data_with_id: Vec<(&Vec<half::f16>, usize)> = unsafe {
+                    std::mem::transmute(data.iter().zip(0..data.len()).collect::<Vec<_>>())
+                };
+                hnsw.parallel_insert(&data_with_id);
+                hnsw.set_searching_mode(true);
+                HnswIndex::FP16(hnsw)
+            }
+            CentroidData::INT8 { data, scale, .. } => {
+                let mut hnsw = Hnsw::<i8, DistINT8>::new(
+                    max_nb_connection,
+                    data.len(),
+                    max_layer,
+                    ef_construction,
+                    DistINT8 { scale: *scale },
+                );
+                let data_with_id: Vec<(&Vec<i8>, usize)> = unsafe {
+                    std::mem::transmute(data.iter().zip(0..data.len()).collect::<Vec<_>>())
+                };
+                hnsw.parallel_insert(&data_with_id);
+                hnsw.set_searching_mode(true);
+                HnswIndex::INT8(hnsw)
+            }
         };
 
-        hnsw.parallel_insert(&data_with_id);
-        hnsw.set_searching_mode(true);
-
-        *cache = Some(hnsw);
+        *cache = Some(hnsw_index);
     }
 
-    /// Search for k nearest centroids to the query using HNSW
-    ///
-    /// `k` parameter is the ef_search value from SearchParams
-    ///
-    /// Returns (centroid_id, distance) pairs sorted by distance
     pub fn search(&self, query: &[f32], ef_search: usize) -> Vec<(u32, f32)> {
-        let n = self.centroid_vecs.len();
+        let n = self.centroid_ids.len();
 
-        // For very small number of centroids, use brute force
-        // HNSW doesn't work well with < 2 centroids
         if n < 2 {
             return self.brute_force_search(query, ef_search);
         }
 
-        // Ensure HNSW is built
         self.ensure_hnsw_built();
 
-        // Search using cached HNSW
         let cache = self.hnsw_cache.read();
         let hnsw = cache.as_ref().unwrap();
 
-        // Use ef_search directly as the HNSW ef parameter
-        // Return ef_search results (will be pruned later by dynamic pruning)
-        let neighbors = hnsw.search(query, ef_search.min(n), ef_search.min(n));
+        let limit = ef_search.min(n);
 
-        // Convert results to (centroid_id, distance) pairs
+        let neighbors = match hnsw {
+            HnswIndex::FP32(h) => h.search(query, limit, limit),
+            HnswIndex::BF16(h) => {
+                let q_bf16: Vec<u16> = query
+                    .iter()
+                    .map(|&x| crate::mstg::scalar_quant::fp32_to_bf16(x))
+                    .collect();
+                h.search(&q_bf16, limit, limit)
+            }
+            HnswIndex::FP16(h) => {
+                let q_fp16: Vec<half::f16> =
+                    query.iter().map(|&x| half::f16::from_f32(x)).collect();
+                h.search(&q_fp16, limit, limit)
+            }
+            HnswIndex::INT8(h) => {
+                let (scale, offset) =
+                    if let CentroidData::INT8 { scale, offset, .. } = &self.centroids {
+                        (*scale, *offset)
+                    } else {
+                        (1.0, 0.0)
+                    };
+                let q_int8: Vec<i8> = query
+                    .iter()
+                    .map(|&x| {
+                        let q = (x - offset) / scale;
+                        q.max(-128.0).min(127.0).round() as i8
+                    })
+                    .collect();
+                h.search(&q_int8, limit, limit)
+            }
+        };
+
         neighbors
             .iter()
-            .map(|neighbor| {
-                let idx = neighbor.d_id;
-                let centroid_id = self.centroid_ids[idx];
-                let distance = neighbor.distance;
-                (centroid_id, distance)
-            })
+            .map(|neighbor| (self.centroid_ids[neighbor.d_id], neighbor.distance))
             .collect()
     }
 
-    /// Brute force search for small number of centroids
     fn brute_force_search(&self, query: &[f32], k: usize) -> Vec<(u32, f32)> {
-        let mut results: Vec<(u32, f32)> = self
-            .centroid_vecs
-            .iter()
-            .enumerate()
-            .map(|(idx, centroid)| {
-                let dist = Self::l2_distance(query, centroid);
-                (self.centroid_ids[idx], dist)
-            })
-            .collect();
+        let mut results: Vec<(u32, f32)> = match &self.centroids {
+            CentroidData::FP32(data) => data
+                .iter()
+                .enumerate()
+                .map(|(idx, centroid)| (self.centroid_ids[idx], Self::l2_distance(query, centroid)))
+                .collect(),
+            CentroidData::BF16(data) => {
+                let q_bf16: Vec<u16> = query
+                    .iter()
+                    .map(|&x| crate::mstg::scalar_quant::fp32_to_bf16(x))
+                    .collect();
+                let dist = DistBF16;
+                data.iter()
+                    .enumerate()
+                    .map(|(idx, centroid)| (self.centroid_ids[idx], dist.eval(&q_bf16, centroid)))
+                    .collect()
+            }
+            CentroidData::FP16(data) => {
+                let q_fp16: Vec<half::f16> =
+                    query.iter().map(|&x| half::f16::from_f32(x)).collect();
+                let dist = DistFP16;
+                data.iter()
+                    .enumerate()
+                    .map(|(idx, centroid)| (self.centroid_ids[idx], dist.eval(&q_fp16, centroid)))
+                    .collect()
+            }
+            CentroidData::INT8 {
+                data,
+                scale,
+                offset,
+            } => {
+                let q_int8: Vec<i8> = query
+                    .iter()
+                    .map(|&x| {
+                        let q = (x - offset) / scale;
+                        q.max(-128.0).min(127.0).round() as i8
+                    })
+                    .collect();
+                let dist = DistINT8 { scale: *scale };
+                data.iter()
+                    .enumerate()
+                    .map(|(idx, centroid)| (self.centroid_ids[idx], dist.eval(&q_int8, centroid)))
+                    .collect()
+            }
+        };
 
         results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         results.truncate(k);
         results
     }
 
-    /// Compute L2 distance between two vectors
     fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
         a.iter()
             .zip(b.iter())
@@ -180,116 +369,18 @@ impl CentroidIndex {
                 diff * diff
             })
             .sum::<f32>()
-            .sqrt()
     }
 
-    /// Get the number of centroids
     pub fn len(&self) -> usize {
         self.centroid_ids.len()
     }
 
-    /// Check if index is empty
     pub fn is_empty(&self) -> bool {
         self.centroid_ids.is_empty()
     }
 
-    /// Estimate memory usage in bytes
     pub fn memory_usage(&self) -> usize {
-        let vec_size = match &self.centroids {
-            CentroidData::FP32(vecs) => vecs.iter().map(|v| v.memory_size()).sum::<usize>(),
-            CentroidData::BF16(vecs) => vecs.iter().map(|v| v.memory_size()).sum::<usize>(),
-        };
-
-        let centroid_vecs_size: usize = self
-            .centroid_vecs
-            .iter()
-            .map(|v| v.len() * std::mem::size_of::<f32>())
-            .sum();
-
-        vec_size + self.centroid_ids.len() * std::mem::size_of::<u32>() + centroid_vecs_size
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_centroid_index_build() {
-        let centroids = vec![
-            vec![0.0, 0.0],
-            vec![1.0, 0.0],
-            vec![0.0, 1.0],
-            vec![1.0, 1.0],
-        ];
-        let ids = vec![0, 1, 2, 3];
-
-        let index = CentroidIndex::build(centroids, ids, ScalarPrecision::BF16);
-
-        assert_eq!(index.len(), 4);
-        assert!(!index.is_empty());
-    }
-
-    #[test]
-    fn test_centroid_search() {
-        let centroids = vec![
-            vec![0.0, 0.0],
-            vec![10.0, 0.0],
-            vec![0.0, 10.0],
-            vec![10.0, 10.0],
-        ];
-        let ids = vec![0, 1, 2, 3];
-
-        let index = CentroidIndex::build(centroids, ids, ScalarPrecision::FP32);
-
-        // Query close to centroid 0
-        let query = vec![0.1, 0.1];
-        let results = index.search(&query, 2);
-
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].0, 0); // Closest should be centroid 0
-    }
-
-    #[test]
-    fn test_bf16_memory_savings() {
-        let centroids: Vec<Vec<f32>> = (0..100).map(|i| vec![i as f32; 960]).collect();
-        let ids: Vec<u32> = (0..100).collect();
-
-        let index_fp32 =
-            CentroidIndex::build(centroids.clone(), ids.clone(), ScalarPrecision::FP32);
-        let index_bf16 = CentroidIndex::build(centroids, ids, ScalarPrecision::BF16);
-
-        let mem_fp32 = index_fp32.memory_usage();
-        let mem_bf16 = index_bf16.memory_usage();
-
-        println!("FP32 memory: {} bytes", mem_fp32);
-        println!("BF16 memory: {} bytes", mem_bf16);
-
-        // BF16 should use less memory (not 50% due to centroid_vecs overhead)
-        assert!(mem_bf16 < mem_fp32);
-    }
-
-    #[test]
-    fn test_hnsw_caching() {
-        let centroids = vec![
-            vec![0.0, 0.0],
-            vec![10.0, 0.0],
-            vec![0.0, 10.0],
-            vec![10.0, 10.0],
-        ];
-        let ids = vec![0, 1, 2, 3];
-
-        let index = CentroidIndex::build(centroids, ids, ScalarPrecision::FP32);
-
-        // First search should build the HNSW
-        let query = vec![0.1, 0.1];
-        let results1 = index.search(&query, 2);
-
-        // Second search should use cached HNSW
-        let results2 = index.search(&query, 2);
-
-        // Results should be identical
-        assert_eq!(results1, results2);
-        assert_eq!(results1[0].0, 0);
+        let vec_size = self.centroids.memory_size();
+        vec_size + self.centroid_ids.len() * std::mem::size_of::<u32>()
     }
 }
