@@ -429,7 +429,9 @@ fn main() {
         )
         .expect("IVF train failed");
         ivf_build_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let ivf_mem_mb = ivf_index.estimate_memory_mb();
         println!("  build    : {:.0} ms", ivf_build_ms);
+        println!("  memory   : {:.1} MB", ivf_mem_mb);
 
         // Warmup
         for q in bench.queries.iter().take(10) {

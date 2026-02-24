@@ -9,7 +9,6 @@ use crc32fast::Hasher;
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
 
-use crate::ivf::{unpack_binary_code, unpack_ex_code};
 use crate::quantizer::{quantize_with_centroid, QuantizedVector, RabitqConfig};
 use crate::rotation::{DynamicRotator, RotatorType};
 use crate::{Metric, RabitqError};
@@ -184,14 +183,6 @@ fn tag_to_metric(tag: u8) -> Option<Metric> {
     }
 }
 
-/// Reconstruct full code from binary_code and ex_code
-fn reconstruct_code(binary_code: &[u8], ex_code: &[u16], ex_bits: u8) -> Vec<u16> {
-    binary_code
-        .iter()
-        .zip(ex_code.iter())
-        .map(|(&bin, &ex)| ex + ((bin as u16) << ex_bits))
-        .collect()
-}
 
 /// Brute-force RaBitQ index without clustering.
 ///
@@ -471,12 +462,6 @@ impl BruteForceRabitqIndex {
             reader.read_exact(&mut ex_code_packed)?;
             hasher.update(&ex_code_packed);
 
-            // Unpack codes for cache and backward compatibility
-            let binary_code = unpack_binary_code(&binary_code_packed, padded_dim);
-            let ex_code = unpack_ex_code(&ex_code_packed, padded_dim, ex_bits as u8);
-
-            // Reconstruct full code for backward compatibility
-            let code = reconstruct_code(&binary_code, &ex_code, ex_bits as u8);
 
             let delta = read_f32(&mut reader, Some(&mut hasher))?;
             let vl = read_f32(&mut reader, Some(&mut hasher))?;
@@ -488,11 +473,8 @@ impl BruteForceRabitqIndex {
             let f_rescale_ex = read_f32(&mut reader, Some(&mut hasher))?;
 
             vectors.push(QuantizedVector {
-                code,
                 binary_code_packed,
                 ex_code_packed,
-                binary_code_unpacked: binary_code, // Cache unpacked version
-                ex_code_unpacked: ex_code,         // Cache unpacked version
                 ex_bits: ex_bits as u8,
                 dim: padded_dim,
                 delta,

@@ -9,18 +9,19 @@ pub struct PostingList {
     pub centroid: Vec<f32>,
     pub size: u32,
     pub rabitq_config: RabitqConfig,
-    pub vectors: Vec<QuantizedVectorWithId>,
 
-    // FastScan batch layout (always built)
+    /// Original IDs of vectors in this cluster
+    pub ids: Vec<u64>,
+
+    /// Source quantized vectors (dropped after build_batch_layout for memory efficiency)
     #[serde(skip)]
+    pub vectors: Option<Vec<QuantizedVectorWithId>>,
+
+    // FastScan batch layout
     pub batch_data: BatchData,
-    #[serde(skip)]
     pub ex_codes_packed: Vec<Vec<u8>>,
-    #[serde(skip)]
     pub f_add_ex: Vec<f32>,
-    #[serde(skip)]
     pub f_rescale_ex: Vec<f32>,
-    #[serde(skip)]
     pub padded_dim: usize,
 }
 
@@ -40,7 +41,8 @@ impl PostingList {
             centroid,
             size: 0,
             rabitq_config: RabitqConfig::default(),
-            vectors: Vec::new(),
+            ids: Vec::new(),
+            vectors: Some(Vec::new()),
             batch_data: BatchData {
                 data: Vec::new(),
                 padded_dim,
@@ -54,16 +56,16 @@ impl PostingList {
 
     /// Add a quantized vector to the posting list
     pub fn add_vector(&mut self, vector_id: u64, quantized: QuantizedVector) {
-        self.vectors.push(QuantizedVectorWithId {
-            vector_id,
-            quantized,
-        });
-        self.size = self.vectors.len() as u32;
+        if let Some(ref mut vectors) = self.vectors {
+            vectors.push(QuantizedVectorWithId {
+                vector_id,
+                quantized,
+            });
+            self.size = vectors.len() as u32;
+        }
     }
 
     /// Quantize and add vectors to this posting list
-    ///
-    /// This trains RaBitQ on the residuals (vectors - centroid) and quantizes all vectors
     pub fn quantize_vectors(
         &mut self,
         vectors: &[Vec<f32>],
@@ -107,60 +109,83 @@ impl PostingList {
     }
 
     /// Get ex_bits for this posting list's RaBitQ config
-    ///
-    /// Returns the number of extended bits used in quantization
     pub fn ex_bits(&self) -> u8 {
         self.rabitq_config.total_bits.saturating_sub(1) as u8
     }
 
     /// Estimate memory size in bytes
     pub fn memory_size(&self) -> usize {
+        let vectors_heap: usize = self
+            .vectors
+            .as_ref()
+            .map(|v| v.iter().map(|qv| qv.quantized.heap_size()).sum())
+            .unwrap_or(0);
+        let ex_codes_heap: usize = self.ex_codes_packed.iter().map(|v| v.capacity()).sum();
+
         std::mem::size_of::<Self>()
             + self.centroid.len() * std::mem::size_of::<f32>()
-            + self.vectors.capacity() * std::mem::size_of::<QuantizedVectorWithId>()
+            + self.ids.capacity() * 8
+            + self
+                .vectors
+                .as_ref()
+                .map(|v| v.capacity() * std::mem::size_of::<QuantizedVectorWithId>())
+                .unwrap_or(0)
+            + vectors_heap
+            + self.batch_data.data.capacity()
+            + ex_codes_heap
+            + self.f_add_ex.capacity() * 4
+            + self.f_rescale_ex.capacity() * 4
     }
 
     /// Get the number of vectors in this posting list
     pub fn len(&self) -> usize {
-        self.vectors.len()
+        self.size as usize
     }
 
     /// Check if the posting list is empty
     pub fn is_empty(&self) -> bool {
-        self.vectors.is_empty()
+        self.size == 0
     }
 
     /// Build FastScan batch layout for efficient batch distance computation
-    /// This must be called after quantization is complete, before search
     pub fn build_batch_layout(&mut self) {
-        if self.vectors.is_empty() {
-            return;
+        let vectors_opt = self.vectors.take();
+        if let Some(vectors) = vectors_opt {
+            if vectors.is_empty() {
+                self.ids = Vec::new(); // Ensure ids is synced even if empty
+                return;
+            }
+
+            // Sync IDs for search
+            self.ids = vectors.iter().map(|v| v.vector_id).collect();
+
+            // Extract quantized vectors
+            let quantized_vecs: Vec<QuantizedVector> =
+                vectors.into_iter().map(|v| v.quantized).collect();
+
+            let ex_bits = self.rabitq_config.total_bits.saturating_sub(1);
+
+            // Pack into batch data
+            let (batch_data, ex_codes, f_add_ex_vals, f_rescale_ex_vals) =
+                crate::fastscan::BatchData::pack_batch(&quantized_vecs, self.padded_dim, ex_bits);
+
+            self.batch_data = batch_data;
+            self.ex_codes_packed = ex_codes;
+            self.f_add_ex = f_add_ex_vals;
+            self.f_rescale_ex = f_rescale_ex_vals;
+
+            // self.vectors is already None due to take()
         }
-
-        // Extract quantized vectors
-        let quantized_vecs: Vec<QuantizedVector> =
-            self.vectors.iter().map(|v| v.quantized.clone()).collect();
-
-        let ex_bits = self.rabitq_config.total_bits.saturating_sub(1);
-
-        // Pack into batch data
-        let (batch_data, ex_codes, f_add_ex_vals, f_rescale_ex_vals) =
-            BatchData::pack_batch(&quantized_vecs, self.padded_dim, ex_bits);
-
-        self.batch_data = batch_data;
-        self.ex_codes_packed = ex_codes;
-        self.f_add_ex = f_add_ex_vals;
-        self.f_rescale_ex = f_rescale_ex_vals;
     }
 
     /// Get number of complete batches
     pub fn num_complete_batches(&self) -> usize {
-        self.vectors.len() / crate::fastscan::BATCH_SIZE
+        self.size as usize / crate::fastscan::BATCH_SIZE
     }
 
     /// Get number of remainder vectors
     pub fn num_remainder_vectors(&self) -> usize {
-        self.vectors.len() % crate::fastscan::BATCH_SIZE
+        self.size as usize % crate::fastscan::BATCH_SIZE
     }
 }
 

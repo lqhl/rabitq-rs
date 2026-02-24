@@ -25,34 +25,6 @@ pub struct SearchParams {
     pub nprobe: usize,
 }
 
-/// Unpack binary codes from packed bytes
-pub(crate) fn unpack_binary_code(packed: &[u8], dim: usize) -> Vec<u8> {
-    let mut binary_code = vec![0u8; dim];
-    // Use the optimized SIMD implementation which ensures correct bit order (MSB-first)
-    crate::simd::unpack_binary_code(packed, &mut binary_code, dim);
-    binary_code
-}
-
-/// Unpack ex codes from packed bytes
-pub(crate) fn unpack_ex_code(packed: &[u8], dim: usize, ex_bits: u8) -> Vec<u16> {
-    if ex_bits == 0 {
-        return vec![0u16; dim];
-    }
-    let mut ex_code = vec![0u16; dim];
-    // Use the optimized SIMD implementation which also handles C++ compatible formats
-    crate::simd::unpack_ex_code(packed, &mut ex_code, dim, ex_bits);
-    ex_code
-}
-
-/// Reconstruct full code from binary_code and ex_code
-#[allow(dead_code)]
-fn reconstruct_code(binary_code: &[u8], ex_code: &[u16], ex_bits: u8) -> Vec<u16> {
-    binary_code
-        .iter()
-        .zip(ex_code.iter())
-        .map(|(&bin, &ex)| ex + ((bin as u16) << ex_bits))
-        .collect()
-}
 
 fn write_u32<W: Write>(writer: &mut W, value: u32, hasher: Option<&mut Hasher>) -> io::Result<()> {
     let bytes = value.to_le_bytes();
@@ -402,6 +374,22 @@ impl ClusterData {
         }
     }
 
+    /// Calculate memory usage in bytes
+    fn memory_usage(&self) -> usize {
+        let ex_codes_heap: usize = self.ex_codes_packed.iter().map(|v| v.capacity()).sum();
+
+        std::mem::size_of::<Self>()
+            + self.centroid.len() * 4
+            + self.ids.capacity() * std::mem::size_of::<usize>()
+            + self.batch_data.capacity()
+            + self.ex_codes_packed.capacity() * std::mem::size_of::<Vec<u8>>()
+            + ex_codes_heap
+            + self.f_add_ex.capacity() * 4
+            + self.f_rescale_ex.capacity() * 4
+            + self.delta.capacity() * 4
+            + self.vl.capacity() * 4
+    }
+
     /// Build ClusterData from quantized vectors
     /// Implements unified memory layout with:
     /// 1. Contiguous batch storage (eliminates scattered Vec allocations)
@@ -472,11 +460,8 @@ impl ClusterData {
             padded_vectors.resize(
                 simd::FASTSCAN_BATCH_SIZE,
                 QuantizedVector {
-                    code: vec![0u16; padded_dim],
                     binary_code_packed: vec![0u8; dim_bytes],
                     ex_code_packed: vec![0u8; ex_bytes_per_vec],
-                    binary_code_unpacked: Vec::new(),
-                    ex_code_unpacked: Vec::new(),
                     ex_bits: ex_bits as u8,
                     dim: padded_dim,
                     delta: 0.0,
@@ -1227,6 +1212,17 @@ impl IvfRabitqIndex {
     /// Number of IVF clusters maintained by the index.
     pub fn cluster_count(&self) -> usize {
         self.clusters.len()
+    }
+
+    /// Estimate total memory usage in bytes
+    pub fn memory_usage(&self) -> usize {
+        let clusters_mem: usize = self.clusters.iter().map(|c| c.memory_usage()).sum();
+        std::mem::size_of::<Self>() + clusters_mem
+    }
+
+    /// Estimate total memory usage in MB
+    pub fn estimate_memory_mb(&self) -> f32 {
+        self.memory_usage() as f32 / (1024.0 * 1024.0)
     }
 
     /// Fetch the original embedding for a given vector ID.
@@ -2274,12 +2270,13 @@ mod batch_search_tests {
             crate::quantizer::quantize_with_centroid(&rotated_data, &centroid, &config, Metric::L2);
 
         // V1: Direct dot product
+        let binary_code_unpacked = quantized.unpack_binary_code();
         let binary_dot_v1 =
-            crate::simd::dot_u8_f32(&quantized.binary_code_unpacked, &rotated_query);
+            crate::simd::dot_u8_f32(&binary_code_unpacked, &rotated_query);
         println!("V1 binary_dot: {:.6}", binary_dot_v1);
         println!(
             "First 16 binary_code_unpacked: {:?}",
-            &quantized.binary_code_unpacked[0..16.min(quantized.binary_code_unpacked.len())]
+            &binary_code_unpacked[0..16.min(binary_code_unpacked.len())]
         );
         println!(
             "First 16 rotated_query: {:?}",
@@ -2343,7 +2340,7 @@ mod batch_search_tests {
         // Now with MSB-first packing, packed[0] bit 7 = binary_code_unpacked[0]
         let mut manual_accu_via_direct = 0.0f32;
         for (i, _) in rotated_query.iter().enumerate().take(padded_dim) {
-            manual_accu_via_direct += quantized.binary_code_unpacked[i] as f32 * rotated_query[i];
+            manual_accu_via_direct += binary_code_unpacked[i] as f32 * rotated_query[i];
         }
         println!(
             "Manual via direct dot product: {:.6}",
@@ -2381,7 +2378,7 @@ mod batch_search_tests {
         // Manually compute what accu should be using lut_float
         let mut expected_result = 0.0f32;
         for (i, _) in rotated_query.iter().enumerate().take(dim) {
-            expected_result += quantized.binary_code_unpacked[i] as f32 * rotated_query[i];
+            expected_result += binary_code_unpacked[i] as f32 * rotated_query[i];
         }
         println!("Expected (direct): {:.6}", expected_result);
 
@@ -2394,7 +2391,7 @@ mod batch_search_tests {
             let dim_base = codebook_idx * 4;
             let mut code = 0u8;
             for bit_idx in 0..4 {
-                if quantized.binary_code_unpacked[dim_base + bit_idx] != 0 {
+                if binary_code_unpacked[dim_base + bit_idx] != 0 {
                     // KPOS tells us which bit position corresponds to which dimension
                     // But the code itself is just the 4 binary bits packed
                     code |= 1 << (3 - bit_idx); // MSB-first: dim_base+0 is MSB (bit 3)
@@ -2406,10 +2403,10 @@ mod batch_search_tests {
                 codebook_idx,
                 dim_base,
                 dim_base + 3,
-                quantized.binary_code_unpacked[dim_base],
-                quantized.binary_code_unpacked[dim_base + 1],
-                quantized.binary_code_unpacked[dim_base + 2],
-                quantized.binary_code_unpacked[dim_base + 3],
+                binary_code_unpacked[dim_base],
+                binary_code_unpacked[dim_base + 1],
+                binary_code_unpacked[dim_base + 2],
+                binary_code_unpacked[dim_base + 3],
                 code,
                 codebook_idx * 16 + code as usize,
                 lut_val

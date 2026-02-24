@@ -132,14 +132,14 @@ impl<'a> MstgBuilder<'a> {
 
         for plist in &posting_lists {
             let size_bytes = bincode::serialized_size(plist).unwrap_or(0) as u32;
-            let avg_norm = plist.vectors.len() as f32; // Simplified logic, change if needed
+            let avg_norm = plist.len() as f32; 
 
             directory.add_entry(PostingListEntry {
                 cluster_id: plist.cluster_id,
                 centroid_id: plist.cluster_id, // Usually the same
                 disk_offset: offset,
                 size_bytes,
-                num_vectors: plist.vectors.len() as u32,
+                num_vectors: plist.len() as u32,
                 avg_norm,
             });
             offset += size_bytes as u64 + 8; // Account for the 8-byte u64 length prefix

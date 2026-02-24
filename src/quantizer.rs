@@ -61,18 +61,10 @@ impl Default for RabitqConfig {
 /// repeated unpacking overhead.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QuantizedVector {
-    /// Full code (binary_code | ex_code), kept for backward compatibility
-    pub code: Vec<u16>,
     /// Packed binary code (1 bit per element)
     pub binary_code_packed: Vec<u8>,
     /// Packed extended code (ex_bits per element)
     pub ex_code_packed: Vec<u8>,
-    /// Cached unpacked binary code (for fast search)
-    #[serde(skip)]
-    pub binary_code_unpacked: Vec<u8>,
-    /// Cached unpacked ex code (for fast search)
-    #[serde(skip)]
-    pub ex_code_unpacked: Vec<u16>,
     /// Number of extended bits per element
     pub ex_bits: u8,
     /// Original dimension (before padding)
@@ -88,51 +80,29 @@ pub struct QuantizedVector {
 }
 
 impl QuantizedVector {
-    /// Unpack binary code for computation (legacy method, prefer using cached binary_code_unpacked)
+    /// Unpack binary code for computation
     #[inline]
     pub fn unpack_binary_code(&self) -> Vec<u8> {
-        // Return cached version if available
-        if !self.binary_code_unpacked.is_empty() {
-            return self.binary_code_unpacked.clone();
-        }
-        // Fallback to unpacking (for deserialized data without cache)
         let mut binary_code = vec![0u8; self.dim];
         simd::unpack_binary_code(&self.binary_code_packed, &mut binary_code, self.dim);
         binary_code
     }
 
-    /// Unpack extended code for computation (legacy method, prefer using cached ex_code_unpacked)
+    /// Unpack extended code for computation
     #[inline]
     pub fn unpack_ex_code(&self) -> Vec<u16> {
-        // Return cached version if available
-        if !self.ex_code_unpacked.is_empty() {
-            return self.ex_code_unpacked.clone();
-        }
-        // Fallback to unpacking (for deserialized data without cache)
         let mut ex_code = vec![0u16; self.dim];
         simd::unpack_ex_code(&self.ex_code_packed, &mut ex_code, self.dim, self.ex_bits);
         ex_code
     }
 
-    /// Ensure unpacked caches are populated (call after deserialization)
-    pub fn ensure_unpacked_cache(&mut self) {
-        if self.binary_code_unpacked.is_empty() {
-            self.binary_code_unpacked = vec![0u8; self.dim];
-            simd::unpack_binary_code(
-                &self.binary_code_packed,
-                &mut self.binary_code_unpacked,
-                self.dim,
-            );
-        }
-        if self.ex_code_unpacked.is_empty() {
-            self.ex_code_unpacked = vec![0u16; self.dim];
-            simd::unpack_ex_code(
-                &self.ex_code_packed,
-                &mut self.ex_code_unpacked,
-                self.dim,
-                self.ex_bits,
-            );
-        }
+    /// Ensure unpacked caches are populated (No-op in memory-optimized version)
+    pub fn ensure_unpacked_cache(&mut self) {}
+
+    /// Calculate heap memory usage in bytes
+    pub fn heap_size(&self) -> usize {
+        self.binary_code_packed.capacity() * std::mem::size_of::<u8>()
+            + self.ex_code_packed.capacity() * std::mem::size_of::<u8>()
     }
 }
 
@@ -243,11 +213,8 @@ pub fn quantize_with_centroid(
     }
 
     QuantizedVector {
-        code: total_code,
         binary_code_packed,
         ex_code_packed,
-        binary_code_unpacked: binary_code, // Cache unpacked version for fast search
-        ex_code_unpacked: ex_code,         // Cache unpacked version for fast search
         ex_bits: ex_bits as u8,
         dim,
         delta,
@@ -540,10 +507,15 @@ fn compute_extended_factors(
 /// you need to apply inverse rotation to the result.
 #[allow(dead_code)]
 pub(crate) fn reconstruct_into(centroid: &[f32], quantized: &QuantizedVector, output: &mut [f32]) {
-    assert_eq!(centroid.len(), quantized.code.len());
+    assert_eq!(centroid.len(), quantized.dim);
     assert_eq!(output.len(), centroid.len());
+
+    let binary_code = quantized.unpack_binary_code();
+    let ex_code = quantized.unpack_ex_code();
+
     for i in 0..centroid.len() {
-        output[i] = centroid[i] + quantized.delta * quantized.code[i] as f32 + quantized.vl;
+        let total_code = (ex_code[i] as u32 + ((binary_code[i] as u32) << quantized.ex_bits)) as f32;
+        output[i] = centroid[i] + quantized.delta * total_code + quantized.vl;
     }
 }
 

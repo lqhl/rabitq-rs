@@ -197,7 +197,7 @@ impl QueryContext {
 
 /// Batch data with unified memory layout for FastScan
 /// Layout: [binary_codes][f_add][f_rescale][f_error]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct BatchData {
     /// Contiguous memory block for batch
     /// Layout per batch (32 vectors):
@@ -322,11 +322,8 @@ impl BatchData {
             padded_vectors.resize(
                 BATCH_SIZE,
                 QuantizedVector {
-                    code: vec![0u16; padded_dim],
                     binary_code_packed: vec![0u8; dim_bytes],
                     ex_code_packed: vec![0u8; ex_bytes_per_vec],
-                    binary_code_unpacked: Vec::new(),
-                    ex_code_unpacked: Vec::new(),
                     ex_bits: ex_bits as u8,
                     dim: padded_dim,
                     delta: 0.0,
