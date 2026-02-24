@@ -37,20 +37,18 @@ impl ClosureAssigner {
         distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
         let closest_dist = distances[0].1;
-        let threshold = closest_dist * (1.0 + self.epsilon);
+        // Since we use squared distances, expand by (1+epsilon)^2 in squared space
+        // to match epsilon-expansion in actual distance space
+        let factor = 1.0 + self.epsilon;
+        let threshold = closest_dist * factor * factor;
 
-        // Select all centroids within threshold
-        let mut candidates: Vec<usize> = distances
+        // Select all centroids within threshold, up to max_replicas
+        distances
             .iter()
             .take(self.max_replicas)
             .filter(|(_, dist)| *dist <= threshold)
             .map(|(idx, _)| *idx)
-            .collect();
-
-        // Apply RNG rule to reduce redundancy
-        candidates = self.apply_rng_rule(vector, centroids, candidates, &distances);
-
-        candidates
+            .collect()
     }
 
     /// Apply Relative Neighborhood Graph rule to filter candidates

@@ -38,6 +38,8 @@ numpy = { version = "0.20", optional = true }
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["std"] }
+parquet = { version = "54", default-features = false, features = ["arrow", "zstd"] }
+arrow = { version = "54", default-features = false, features = ["ffi"] }
 
 [lib]
 name = "rabitq_rs"

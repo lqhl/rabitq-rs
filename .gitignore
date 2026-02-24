@@ -36,6 +36,7 @@
 bin/
 build/
 data/
+dataset/
 target/
 
 # keep Rust binary sources under src/
