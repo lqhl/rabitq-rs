@@ -106,7 +106,7 @@ impl INT8Vector {
             .iter()
             .map(|&x| {
                 let q = (x - offset) / scale;
-                let q_clamped = q.max(-128.0).min(127.0);
+                let q_clamped = q.clamp(-128.0, 127.0);
                 q_clamped.round() as i8
             })
             .collect();

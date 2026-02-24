@@ -151,7 +151,7 @@ impl CentroidIndex {
                         c.iter()
                             .map(|&x| {
                                 let q = (x - offset) / scale;
-                                q.max(-128.0).min(127.0).round() as i8
+                                q.clamp(-128.0, 127.0).round() as i8
                             })
                             .collect()
                     })
@@ -201,7 +201,12 @@ impl CentroidIndex {
                     DistL2 {},
                 );
                 let data_with_id: Vec<(&Vec<f32>, usize)> = unsafe {
-                    std::mem::transmute(data.iter().zip(0..data.len()).collect::<Vec<_>>())
+                    std::mem::transmute(
+                        data.iter()
+                            .enumerate()
+                            .map(|(i, v)| (v, i))
+                            .collect::<Vec<_>>(),
+                    )
                 };
                 hnsw.parallel_insert(&data_with_id);
                 hnsw.set_searching_mode(true);
@@ -216,7 +221,12 @@ impl CentroidIndex {
                     DistBF16 {},
                 );
                 let data_with_id: Vec<(&Vec<u16>, usize)> = unsafe {
-                    std::mem::transmute(data.iter().zip(0..data.len()).collect::<Vec<_>>())
+                    std::mem::transmute(
+                        data.iter()
+                            .enumerate()
+                            .map(|(i, v)| (v, i))
+                            .collect::<Vec<_>>(),
+                    )
                 };
                 hnsw.parallel_insert(&data_with_id);
                 hnsw.set_searching_mode(true);
@@ -231,7 +241,12 @@ impl CentroidIndex {
                     DistFP16 {},
                 );
                 let data_with_id: Vec<(&Vec<half::f16>, usize)> = unsafe {
-                    std::mem::transmute(data.iter().zip(0..data.len()).collect::<Vec<_>>())
+                    std::mem::transmute(
+                        data.iter()
+                            .enumerate()
+                            .map(|(i, v)| (v, i))
+                            .collect::<Vec<_>>(),
+                    )
                 };
                 hnsw.parallel_insert(&data_with_id);
                 hnsw.set_searching_mode(true);
@@ -246,7 +261,12 @@ impl CentroidIndex {
                     DistINT8 { scale: *scale },
                 );
                 let data_with_id: Vec<(&Vec<i8>, usize)> = unsafe {
-                    std::mem::transmute(data.iter().zip(0..data.len()).collect::<Vec<_>>())
+                    std::mem::transmute(
+                        data.iter()
+                            .enumerate()
+                            .map(|(i, v)| (v, i))
+                            .collect::<Vec<_>>(),
+                    )
                 };
                 hnsw.parallel_insert(&data_with_id);
                 hnsw.set_searching_mode(true);
@@ -296,7 +316,7 @@ impl CentroidIndex {
                     .iter()
                     .map(|&x| {
                         let q = (x - offset) / scale;
-                        q.max(-128.0).min(127.0).round() as i8
+                        q.clamp(-128.0, 127.0).round() as i8
                     })
                     .collect();
                 h.search(&q_int8, limit, limit)
@@ -345,7 +365,7 @@ impl CentroidIndex {
                     .iter()
                     .map(|&x| {
                         let q = (x - offset) / scale;
-                        q.max(-128.0).min(127.0).round() as i8
+                        q.clamp(-128.0, 127.0).round() as i8
                     })
                     .collect();
                 let dist = DistINT8 { scale: *scale };

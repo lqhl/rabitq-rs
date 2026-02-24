@@ -116,9 +116,7 @@ fn load_parquet_dataset(dir: &str, limit: Option<usize>) -> BenchData {
         let mut all_vecs: Vec<Vec<f32>> = Vec::new();
         for batch in reader {
             let batch = batch.expect("Failed to read batch");
-            let emb_col = batch
-                .column_by_name("emb")
-                .expect("No 'emb' column found");
+            let emb_col = batch.column_by_name("emb").expect("No 'emb' column found");
             let list_arr = emb_col
                 .as_any()
                 .downcast_ref::<LargeListArray>()
@@ -248,7 +246,11 @@ fn brute_force_knn(data: &[Vec<f32>], query: &[f32], k: usize) -> Vec<usize> {
 
 fn recall(retrieved: &[usize], ground_truth: &[usize], k: usize) -> f32 {
     let gt: HashSet<usize> = ground_truth.iter().take(k).copied().collect();
-    let hits = retrieved.iter().take(k).filter(|id| gt.contains(id)).count();
+    let hits = retrieved
+        .iter()
+        .take(k)
+        .filter(|id| gt.contains(id))
+        .count();
     hits as f32 / k.min(ground_truth.len()) as f32
 }
 
@@ -277,7 +279,10 @@ fn main() {
         if Path::new(&train_path).exists() {
             load_parquet_dataset(dir, cfg.limit)
         } else {
-            println!("  dataset not found at {}, falling back to random data", dir);
+            println!(
+                "  dataset not found at {}, falling back to random data",
+                dir
+            );
             generate_random_dataset(cfg.n_base, cfg.n_queries, cfg.dim, cfg.k)
         }
     };
@@ -315,7 +320,13 @@ fn main() {
 
     // warmup
     for q in bench.queries.iter().take(10) {
-        let _ = ivf_index.search(q, IvfSearchParams { nprobe: nlist / 10, top_k: cfg.k });
+        let _ = ivf_index.search(
+            q,
+            IvfSearchParams {
+                nprobe: nlist / 10,
+                top_k: cfg.k,
+            },
+        );
     }
 
     // nprobe sweep
@@ -337,10 +348,7 @@ fn main() {
         "  {:>8}  {:>10}  {:>10}  {:>10}",
         "nprobe", "recall@K", "latency", "QPS"
     );
-    println!(
-        "  {:->8}  {:->10}  {:->10}  {:->10}",
-        "", "", "", ""
-    );
+    println!("  {:->8}  {:->10}  {:->10}  {:->10}", "", "", "", "");
 
     struct IvfResult {
         nprobe: usize,
@@ -558,7 +566,9 @@ fn main() {
     } else {
         println!(
             "  Build: IVF {:.0}ms vs MSTG {:.0}ms (MSTG {:.1}x faster)",
-            ivf_build_ms, mstg_build_ms, 1.0 / build_ratio,
+            ivf_build_ms,
+            mstg_build_ms,
+            1.0 / build_ratio,
         );
     }
 
