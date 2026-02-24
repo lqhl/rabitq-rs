@@ -158,22 +158,28 @@ mod tests {
         let data = generate_test_data(500, 128);
 
         // Build with FP32
-        let mut config_fp32 = MstgConfig::default();
-        config_fp32.centroid_precision = ScalarPrecision::FP32;
+        let config_fp32 = MstgConfig {
+            centroid_precision: ScalarPrecision::FP32,
+            ..Default::default()
+        };
         let index_fp32 = MstgIndex::build(&data, config_fp32).unwrap();
         let mem_fp32 =
             MstgIndex::estimate_memory_mb(&index_fp32.centroid_index, &index_fp32.posting_lists);
 
         // Build with BF16
-        let mut config_bf16 = MstgConfig::default();
-        config_bf16.centroid_precision = ScalarPrecision::BF16;
+        let config_bf16 = MstgConfig {
+            centroid_precision: ScalarPrecision::BF16,
+            ..Default::default()
+        };
         let index_bf16 = MstgIndex::build(&data, config_bf16).unwrap();
         let mem_bf16 =
             MstgIndex::estimate_memory_mb(&index_bf16.centroid_index, &index_bf16.posting_lists);
 
         // Build with INT8
-        let mut config_int8 = MstgConfig::default();
-        config_int8.centroid_precision = ScalarPrecision::INT8;
+        let config_int8 = MstgConfig {
+            centroid_precision: ScalarPrecision::INT8,
+            ..Default::default()
+        };
         let index_int8 = MstgIndex::build(&data, config_int8).unwrap();
         let mem_int8 =
             MstgIndex::estimate_memory_mb(&index_int8.centroid_index, &index_int8.posting_lists);
