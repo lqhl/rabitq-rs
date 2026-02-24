@@ -95,6 +95,15 @@ impl CentroidData {
             Self::INT8 { data, .. } => data.iter().map(|v| v.len()).sum(),
         }
     }
+
+    pub fn dimension(&self) -> Option<usize> {
+        match self {
+            Self::FP32(data) => data.first().map(|v| v.len()),
+            Self::BF16(data) => data.first().map(|v| v.len()),
+            Self::FP16(data) => data.first().map(|v| v.len()),
+            Self::INT8 { data, .. } => data.first().map(|v| v.len()),
+        }
+    }
 }
 
 impl CentroidIndex {
@@ -402,5 +411,10 @@ impl CentroidIndex {
     pub fn memory_usage(&self) -> usize {
         let vec_size = self.centroids.memory_size();
         vec_size + self.centroid_ids.len() * std::mem::size_of::<u32>()
+    }
+
+    /// Get the dimension of centroid vectors
+    pub fn dimension(&self) -> Option<usize> {
+        self.centroids.dimension()
     }
 }

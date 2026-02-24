@@ -16,6 +16,7 @@
 //! Usage:
 //!   cargo run --release --example bench_ivf_vs_mstg
 //!   cargo run --release --example bench_ivf_vs_mstg -- --random --n 100000 --dim 128
+//!   cargo run --release --example bench_ivf_vs_mstg -- --epsilon 0.05
 
 use rabitq_rs::mstg::{MstgConfig, MstgIndex, SearchParams as MstgSearchParams};
 use rabitq_rs::{IvfRabitqIndex, Metric, RotatorType, SearchParams as IvfSearchParams};
@@ -35,7 +36,10 @@ struct Config {
     dim: usize,
     k: usize,
     dataset_dir: String,
-    limit: Option<usize>, // optional: only load first N vectors from dataset
+    limit: Option<usize>,
+    epsilon: Option<f32>, // --epsilon: fixed closure epsilon
+    epsilon_sweep: bool,  // --epsilon-sweep: test multiple epsilon values
+    skip_ivf: bool,       // --skip-ivf: skip IVF benchmark
 }
 
 fn parse_args() -> Config {
@@ -48,6 +52,9 @@ fn parse_args() -> Config {
         k: 100,
         dataset_dir: "dataset/cohere_100k_768d".to_string(),
         limit: None,
+        epsilon: None,
+        epsilon_sweep: false,
+        skip_ivf: false,
     };
     let mut i = 1;
     while i < args.len() {
@@ -79,6 +86,18 @@ fn parse_args() -> Config {
             "--limit" => {
                 cfg.limit = Some(args[i + 1].parse().expect("bad --limit"));
                 i += 2;
+            }
+            "--epsilon" => {
+                cfg.epsilon = Some(args[i + 1].parse().expect("bad --epsilon"));
+                i += 2;
+            }
+            "--epsilon-sweep" => {
+                cfg.epsilon_sweep = true;
+                i += 1;
+            }
+            "--skip-ivf" => {
+                cfg.skip_ivf = true;
+                i += 1;
             }
             _ => {
                 i += 1;
@@ -255,6 +274,91 @@ fn recall(retrieved: &[usize], ground_truth: &[usize], k: usize) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: run a recall/latency sweep on an MSTG index
+// ---------------------------------------------------------------------------
+
+struct MstgResult {
+    label: String,
+    recall: f32,
+    latency_us: f64,
+}
+
+fn run_mstg_sweep(index: &MstgIndex, bench: &BenchData, k: usize, tag: &str) -> Vec<MstgResult> {
+    // Warmup
+    let warmup_params = MstgSearchParams::balanced(k);
+    for q in bench.queries.iter().take(10) {
+        let _ = index.search(q, &warmup_params);
+    }
+
+    let sweep: Vec<(usize, f32, &str)> = vec![
+        (50, 0.3, "low-latency"),
+        (100, 0.5, "balanced-low"),
+        (150, 0.6, "balanced"),
+        (200, 0.8, "balanced-high"),
+        (300, 1.0, "high-recall"),
+        (500, 1.5, "max-recall"),
+    ];
+
+    println!();
+    println!(
+        "  {:>12}  {:>10}  {:>10}  {:>10}  {:>12}",
+        "profile", "recall@K", "latency", "QPS", "ef / eps"
+    );
+    println!(
+        "  {:->12}  {:->10}  {:->10}  {:->10}  {:->12}",
+        "", "", "", "", ""
+    );
+
+    let mut results: Vec<MstgResult> = Vec::new();
+
+    for &(ef, eps, label) in &sweep {
+        let params = MstgSearchParams::new(ef, eps, k);
+
+        let start = Instant::now();
+        let search_results: Vec<Vec<usize>> = bench
+            .queries
+            .iter()
+            .map(|q| {
+                index
+                    .search(q, &params)
+                    .iter()
+                    .map(|r| r.vector_id)
+                    .collect()
+            })
+            .collect();
+        let elapsed = start.elapsed();
+        let n_q = bench.queries.len();
+        let latency_us = elapsed.as_secs_f64() * 1_000_000.0 / n_q as f64;
+        let qps = n_q as f64 / elapsed.as_secs_f64();
+
+        let avg_recall: f32 = search_results
+            .iter()
+            .zip(bench.ground_truth.iter())
+            .map(|(r, gt)| recall(r, gt, k))
+            .sum::<f32>()
+            / n_q as f32;
+
+        println!(
+            "  {:>12}  {:>9.1}%  {:>8.0} us  {:>10.0}  ef={:<3} e={:.1}",
+            label,
+            avg_recall * 100.0,
+            latency_us,
+            qps,
+            ef,
+            eps,
+        );
+
+        results.push(MstgResult {
+            label: format!("{}-{}", tag, label),
+            recall: avg_recall,
+            latency_us,
+        });
+    }
+
+    results
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -263,7 +367,7 @@ fn main() {
 
     println!();
     println!("========================================================");
-    println!("  IVF vs MSTG Benchmark");
+    println!("  IVF vs MSTG-mem vs MSTG-disk Benchmark");
     println!("========================================================");
 
     // Load data
@@ -299,121 +403,184 @@ fn main() {
     // =====================================================================
     //  IVF
     // =====================================================================
-    let nlist = (bench.data.len() as f32).sqrt() as usize;
-
-    println!();
-    println!("--- IVF (nlist={}) ---", nlist);
-
-    let t0 = Instant::now();
-    let ivf_index = IvfRabitqIndex::train(
-        &bench.data,
-        nlist,
-        7,
-        bench.metric,
-        RotatorType::FhtKacRotator,
-        42,
-        true,
-    )
-    .expect("IVF train failed");
-    let ivf_build_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    println!("  build    : {:.0} ms", ivf_build_ms);
-
-    // warmup
-    for q in bench.queries.iter().take(10) {
-        let _ = ivf_index.search(
-            q,
-            IvfSearchParams {
-                nprobe: nlist / 10,
-                top_k: cfg.k,
-            },
-        );
-    }
-
-    // nprobe sweep
-    let nprobe_candidates: Vec<usize> = {
-        let mut v: Vec<usize> = vec![1, 2, 4, 8];
-        let mut p = nlist / 40;
-        while p >= 1 && p <= nlist {
-            v.push(p);
-            p = (p as f64 * 1.5) as usize;
-        }
-        v.push(nlist);
-        v.sort();
-        v.dedup();
-        v.into_iter().filter(|&p| p >= 1 && p <= nlist).collect()
-    };
-
-    println!();
-    println!(
-        "  {:>8}  {:>10}  {:>10}  {:>10}",
-        "nprobe", "recall@K", "latency", "QPS"
-    );
-    println!("  {:->8}  {:->10}  {:->10}  {:->10}", "", "", "", "");
-
     struct IvfResult {
         nprobe: usize,
         recall: f32,
         latency_us: f64,
     }
     let mut ivf_results: Vec<IvfResult> = Vec::new();
+    let mut ivf_build_ms = 0.0;
 
-    for &nprobe in &nprobe_candidates {
-        let params = IvfSearchParams {
-            nprobe,
-            top_k: cfg.k,
+    if !cfg.skip_ivf {
+        let nlist = (bench.data.len() as f32).sqrt() as usize;
+
+        println!();
+        println!("--- IVF (nlist={}) ---", nlist);
+
+        let t0 = Instant::now();
+        let ivf_index = IvfRabitqIndex::train(
+            &bench.data,
+            nlist,
+            7,
+            bench.metric,
+            RotatorType::FhtKacRotator,
+            42,
+            true,
+        )
+        .expect("IVF train failed");
+        ivf_build_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        println!("  build    : {:.0} ms", ivf_build_ms);
+
+        // Warmup
+        for q in bench.queries.iter().take(10) {
+            let _ = ivf_index.search(
+                q,
+                IvfSearchParams {
+                    nprobe: nlist / 10,
+                    top_k: cfg.k,
+                },
+            );
+        }
+
+        // nprobe sweep
+        let nprobe_candidates: Vec<usize> = {
+            let mut v: Vec<usize> = vec![1, 2, 4, 8];
+            let mut p = nlist / 40;
+            while p >= 1 && p <= nlist {
+                v.push(p);
+                p = (p as f64 * 1.5) as usize;
+            }
+            v.push(nlist);
+            v.sort();
+            v.dedup();
+            v.into_iter().filter(|&p| p >= 1 && p <= nlist).collect()
         };
 
-        let start = Instant::now();
-        let results: Vec<Vec<usize>> = bench
-            .queries
-            .iter()
-            .map(|q| {
-                ivf_index
-                    .search(q, params)
-                    .unwrap()
-                    .iter()
-                    .map(|r| r.id)
-                    .collect()
-            })
-            .collect();
-        let elapsed = start.elapsed();
-        let n_q = bench.queries.len();
-        let latency_us = elapsed.as_secs_f64() * 1_000_000.0 / n_q as f64;
-        let qps = n_q as f64 / elapsed.as_secs_f64();
-
-        let avg_recall: f32 = results
-            .iter()
-            .zip(bench.ground_truth.iter())
-            .map(|(r, gt)| recall(r, gt, cfg.k))
-            .sum::<f32>()
-            / n_q as f32;
-
+        println!();
         println!(
-            "  {:>8}  {:>9.1}%  {:>8.0} us  {:>10.0}",
-            nprobe,
-            avg_recall * 100.0,
-            latency_us,
-            qps,
+            "  {:>8}  {:>10}  {:>10}  {:>10}",
+            "nprobe", "recall@K", "latency", "QPS"
         );
+        println!("  {:->8}  {:->10}  {:->10}  {:->10}", "", "", "", "");
 
-        ivf_results.push(IvfResult {
-            nprobe,
-            recall: avg_recall,
-            latency_us,
-        });
+        for &nprobe in &nprobe_candidates {
+            let params = IvfSearchParams {
+                nprobe,
+                top_k: cfg.k,
+            };
+
+            let start = Instant::now();
+            let results: Vec<Vec<usize>> = bench
+                .queries
+                .iter()
+                .map(|q| {
+                    ivf_index
+                        .search(q, params)
+                        .unwrap()
+                        .iter()
+                        .map(|r| r.id)
+                        .collect()
+                })
+                .collect();
+            let elapsed = start.elapsed();
+            let n_q = bench.queries.len();
+            let latency_us = elapsed.as_secs_f64() * 1_000_000.0 / n_q as f64;
+            let qps = n_q as f64 / elapsed.as_secs_f64();
+
+            let avg_recall: f32 = results
+                .iter()
+                .zip(bench.ground_truth.iter())
+                .map(|(r, gt)| recall(r, gt, cfg.k))
+                .sum::<f32>()
+                / n_q as f32;
+
+            println!(
+                "  {:>8}  {:>9.1}%  {:>8.0} us  {:>10.0}",
+                nprobe,
+                avg_recall * 100.0,
+                latency_us,
+                qps,
+            );
+
+            ivf_results.push(IvfResult {
+                nprobe,
+                recall: avg_recall,
+                latency_us,
+            });
+        }
     }
 
     // =====================================================================
-    //  MSTG
+    //  Epsilon sweep (if requested)
     // =====================================================================
+    if cfg.epsilon_sweep {
+        let epsilons = [0.01, 0.02, 0.03, 0.05, 0.08, 0.1, 0.15, 0.3];
+
+        println!();
+        println!("========================================================");
+        println!("  Epsilon Sweep (replication factor analysis)");
+        println!("========================================================");
+        println!();
+        println!(
+            "  {:>8}  {:>14}  {:>10}  {:>10}",
+            "epsilon", "repl. factor", "build (ms)", "memory (MB)"
+        );
+        println!("  {:->8}  {:->14}  {:->10}  {:->10}", "", "", "", "");
+
+        for &eps in &epsilons {
+            let mstg_config = MstgConfig {
+                max_posting_size: 1000,
+                branching_factor: 8,
+                balance_weight: 1.0,
+                closure_epsilon: eps,
+                max_replicas: 5,
+                rabitq_bits: 7,
+                faster_config: true,
+                metric: bench.metric,
+                hnsw_m: 32,
+                hnsw_ef_construction: 200,
+                centroid_precision: rabitq_rs::mstg::ScalarPrecision::BF16,
+                default_ef_search: 200,
+                pruning_epsilon: 1.5,
+            };
+
+            let t0 = Instant::now();
+            let mstg_index = MstgIndex::build(&bench.data, mstg_config).expect("MSTG build failed");
+            let build_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+            // Count total vectors across all posting lists
+            let total_vecs: usize = mstg_index
+                .directory
+                .entries
+                .iter()
+                .map(|e| e.num_vectors as usize)
+                .sum();
+            let repl_factor = total_vecs as f64 / bench.data.len() as f64;
+            let mem_mb = MstgIndex::estimate_memory_mb(
+                &mstg_index.centroid_index,
+                &mstg_index.posting_lists,
+            );
+
+            println!(
+                "  {:>8.3}  {:>14.2}  {:>10.0}  {:>10.1}",
+                eps, repl_factor, build_ms, mem_mb,
+            );
+        }
+    }
+
+    // =====================================================================
+    //  MSTG (memory mode)
+    // =====================================================================
+    let closure_eps = cfg.epsilon.unwrap_or(0.3);
+
     println!();
-    println!("--- MSTG ---");
+    println!("--- MSTG-mem (epsilon={}) ---", closure_eps);
 
     let mstg_config = MstgConfig {
         max_posting_size: 1000,
         branching_factor: 8,
         balance_weight: 1.0,
-        closure_epsilon: 0.3,
+        closure_epsilon: closure_eps,
         max_replicas: 5,
         rabitq_bits: 7,
         faster_config: true,
@@ -430,85 +597,63 @@ fn main() {
     let mstg_build_ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!("  build    : {:.0} ms", mstg_build_ms);
 
-    // warmup
-    let warmup_params = MstgSearchParams::balanced(cfg.k);
-    for q in bench.queries.iter().take(10) {
-        let _ = mstg_index.search(q, &warmup_params);
-    }
+    // Report replication factor
+    let total_vecs: usize = mstg_index
+        .directory
+        .entries
+        .iter()
+        .map(|e| e.num_vectors as usize)
+        .sum();
+    let repl_factor = total_vecs as f64 / bench.data.len() as f64;
+    let mem_mb =
+        MstgIndex::estimate_memory_mb(&mstg_index.centroid_index, &mstg_index.posting_lists);
+    println!("  repl     : {:.2}x", repl_factor);
+    println!("  memory   : {:.1} MB", mem_mb);
 
-    // ef_search / pruning_epsilon sweep
-    let sweep: Vec<(usize, f32, &str)> = vec![
-        (50, 0.3, "low-latency"),
-        (100, 0.5, "balanced-low"),
-        (150, 0.6, "balanced"),
-        (200, 0.8, "balanced-high"),
-        (300, 1.0, "high-recall"),
-        (500, 1.5, "max-recall"),
-    ];
-
-    println!();
-    println!(
-        "  {:>12}  {:>10}  {:>10}  {:>10}  {:>12}",
-        "profile", "recall@K", "latency", "QPS", "ef / eps"
-    );
-    println!(
-        "  {:->12}  {:->10}  {:->10}  {:->10}  {:->12}",
-        "", "", "", "", ""
-    );
-
-    struct MstgResult {
-        label: String,
-        recall: f32,
-        latency_us: f64,
-    }
-    let mut mstg_results: Vec<MstgResult> = Vec::new();
-
-    for &(ef, eps, label) in &sweep {
-        let params = MstgSearchParams::new(ef, eps, cfg.k);
-
-        let start = Instant::now();
-        let results: Vec<Vec<usize>> = bench
-            .queries
-            .iter()
-            .map(|q| {
-                mstg_index
-                    .search(q, &params)
-                    .iter()
-                    .map(|r| r.vector_id)
-                    .collect()
-            })
-            .collect();
-        let elapsed = start.elapsed();
-        let n_q = bench.queries.len();
-        let latency_us = elapsed.as_secs_f64() * 1_000_000.0 / n_q as f64;
-        let qps = n_q as f64 / elapsed.as_secs_f64();
-
-        let avg_recall: f32 = results
-            .iter()
-            .zip(bench.ground_truth.iter())
-            .map(|(r, gt)| recall(r, gt, cfg.k))
-            .sum::<f32>()
-            / n_q as f32;
-
-        println!(
-            "  {:>12}  {:>9.1}%  {:>8.0} us  {:>10.0}  ef={:<3} e={:.1}",
-            label,
-            avg_recall * 100.0,
-            latency_us,
-            qps,
-            ef,
-            eps,
-        );
-
-        mstg_results.push(MstgResult {
-            label: label.to_string(),
-            recall: avg_recall,
-            latency_us,
-        });
-    }
+    let mstg_mem_results = run_mstg_sweep(&mstg_index, &bench, cfg.k, "mem");
 
     // =====================================================================
-    //  Head-to-head comparison at similar recall levels
+    //  MSTG (disk mode)
+    // =====================================================================
+    println!();
+    println!("--- MSTG-disk (mmap, same index) ---");
+
+    // Save index to temp path
+    let save_path = format!(
+        "/tmp/bench_mstg_disk_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    );
+
+    let t0 = Instant::now();
+    mstg_index.save_to_path(&save_path).unwrap();
+    let save_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    println!("  save     : {:.0} ms", save_ms);
+
+    // Load as mmap
+    let t0 = Instant::now();
+    let mstg_disk = MstgIndex::load_from_path_mmap(&save_path).unwrap();
+    let load_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    println!("  mmap load: {:.0} ms", load_ms);
+
+    let disk_mem_mb =
+        MstgIndex::estimate_memory_mb(&mstg_disk.centroid_index, &mstg_disk.posting_lists);
+    println!(
+        "  memory   : {:.1} MB (centroid + directory only)",
+        disk_mem_mb
+    );
+
+    let mstg_disk_results = run_mstg_sweep(&mstg_disk, &bench, cfg.k, "disk");
+
+    // Clean up temp files
+    let _ = std::fs::remove_file(format!("{}.mstg", save_path));
+    let _ = std::fs::remove_file(format!("{}.hnsw.graph", save_path));
+    let _ = std::fs::remove_file(format!("{}.hnsw.data", save_path));
+
+    // =====================================================================
+    //  Head-to-head comparison
     // =====================================================================
     println!();
     println!("========================================================");
@@ -516,36 +661,54 @@ fn main() {
     println!("========================================================");
     println!();
 
-    for mstg_r in &mstg_results {
-        if let Some(ivf_r) = ivf_results.iter().min_by(|a, b| {
-            (a.recall - mstg_r.recall)
-                .abs()
-                .partial_cmp(&(b.recall - mstg_r.recall).abs())
-                .unwrap()
-        }) {
-            let recall_diff = (ivf_r.recall - mstg_r.recall).abs();
-            if recall_diff > 0.10 {
-                continue;
-            }
-            let speedup = ivf_r.latency_us / mstg_r.latency_us;
-            let faster = if speedup > 1.0 { "MSTG" } else { "IVF" };
-            let ratio = if speedup > 1.0 {
-                speedup
-            } else {
-                1.0 / speedup
-            };
+    // Compare MSTG-mem vs IVF
+    if !cfg.skip_ivf {
+        println!("  MSTG-mem vs IVF:");
+        for mstg_r in &mstg_mem_results {
+            if let Some(ivf_r) = ivf_results.iter().min_by(|a, b| {
+                (a.recall - mstg_r.recall)
+                    .abs()
+                    .partial_cmp(&(b.recall - mstg_r.recall).abs())
+                    .unwrap()
+            }) {
+                let recall_diff = (ivf_r.recall - mstg_r.recall).abs();
+                if recall_diff > 0.10 {
+                    continue;
+                }
+                let speedup = ivf_r.latency_us / mstg_r.latency_us;
+                let faster = if speedup > 1.0 { "MSTG-mem" } else { "IVF" };
+                let ratio = if speedup > 1.0 {
+                    speedup
+                } else {
+                    1.0 / speedup
+                };
 
-            println!(
-                "  recall ~{:.0}%: MSTG({}) {:.0}us vs IVF(nprobe={}) {:.0}us => {} {:.2}x faster",
-                mstg_r.recall * 100.0,
-                mstg_r.label,
-                mstg_r.latency_us,
-                ivf_r.nprobe,
-                ivf_r.latency_us,
-                faster,
-                ratio,
-            );
+                println!(
+                    "    recall ~{:.0}%: MSTG-mem({}) {:.0}us vs IVF(nprobe={}) {:.0}us => {} {:.2}x faster",
+                    mstg_r.recall * 100.0,
+                    mstg_r.label,
+                    mstg_r.latency_us,
+                    ivf_r.nprobe,
+                    ivf_r.latency_us,
+                    faster,
+                    ratio,
+                );
+            }
         }
+        println!();
+    }
+
+    // Compare MSTG-disk vs MSTG-mem
+    println!("  MSTG-disk vs MSTG-mem:");
+    for (disk_r, mem_r) in mstg_disk_results.iter().zip(mstg_mem_results.iter()) {
+        let speedup = disk_r.latency_us / mem_r.latency_us;
+        println!(
+            "    recall ~{:.0}%: disk {:.0}us vs mem {:.0}us => disk {:.1}x slower",
+            mem_r.recall * 100.0,
+            disk_r.latency_us,
+            mem_r.latency_us,
+            speedup,
+        );
     }
 
     // =====================================================================
@@ -557,35 +720,68 @@ fn main() {
     println!("========================================================");
     println!();
 
-    let build_ratio = mstg_build_ms / ivf_build_ms;
-    if build_ratio > 1.0 {
-        println!(
-            "  Build: IVF {:.0}ms vs MSTG {:.0}ms (IVF {:.1}x faster)",
-            ivf_build_ms, mstg_build_ms, build_ratio,
-        );
-    } else {
-        println!(
-            "  Build: IVF {:.0}ms vs MSTG {:.0}ms (MSTG {:.1}x faster)",
-            ivf_build_ms,
-            mstg_build_ms,
-            1.0 / build_ratio,
-        );
+    println!(
+        "  MSTG config: epsilon={}, replication={:.2}x",
+        closure_eps, repl_factor
+    );
+    println!(
+        "  MSTG-mem : build={:.0}ms, memory={:.1}MB",
+        mstg_build_ms, mem_mb
+    );
+    println!(
+        "  MSTG-disk: save={:.0}ms, mmap_load={:.0}ms, memory={:.1}MB",
+        save_ms, load_ms, disk_mem_mb
+    );
+
+    if !cfg.skip_ivf {
+        let build_ratio = mstg_build_ms / ivf_build_ms;
+        if build_ratio > 1.0 {
+            println!(
+                "  Build: IVF {:.0}ms vs MSTG {:.0}ms (IVF {:.1}x faster)",
+                ivf_build_ms, mstg_build_ms, build_ratio,
+            );
+        } else {
+            println!(
+                "  Build: IVF {:.0}ms vs MSTG {:.0}ms (MSTG {:.1}x faster)",
+                ivf_build_ms,
+                mstg_build_ms,
+                1.0 / build_ratio,
+            );
+        }
+
+        if let Some(best_mstg) = mstg_mem_results
+            .iter()
+            .max_by(|a, b| a.recall.partial_cmp(&b.recall).unwrap())
+        {
+            if let Some(best_ivf) = ivf_results
+                .iter()
+                .max_by(|a, b| a.recall.partial_cmp(&b.recall).unwrap())
+            {
+                println!(
+                    "  Peak recall: IVF {:.1}% (nprobe={}) vs MSTG-mem {:.1}% ({})",
+                    best_ivf.recall * 100.0,
+                    best_ivf.nprobe,
+                    best_mstg.recall * 100.0,
+                    best_mstg.label,
+                );
+            }
+        }
     }
 
-    if let Some(best_mstg) = mstg_results
+    if let Some(best_disk) = mstg_disk_results
         .iter()
         .max_by(|a, b| a.recall.partial_cmp(&b.recall).unwrap())
     {
-        if let Some(best_ivf) = ivf_results
+        if let Some(best_mem) = mstg_mem_results
             .iter()
             .max_by(|a, b| a.recall.partial_cmp(&b.recall).unwrap())
         {
             println!(
-                "  Peak recall: IVF {:.1}% (nprobe={}) vs MSTG {:.1}% ({})",
-                best_ivf.recall * 100.0,
-                best_ivf.nprobe,
-                best_mstg.recall * 100.0,
-                best_mstg.label,
+                "  Peak recall: MSTG-mem {:.1}% ({}) vs MSTG-disk {:.1}% ({})",
+                best_mem.recall * 100.0,
+                best_mem.label,
+                best_disk.recall * 100.0,
+                best_disk.label,
             );
         }
     }
