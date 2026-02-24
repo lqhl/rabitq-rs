@@ -37,20 +37,18 @@ impl ClosureAssigner {
         distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
         let closest_dist = distances[0].1;
-        let threshold = closest_dist * (1.0 + self.epsilon);
+        // Since we use squared distances, expand by (1+epsilon)^2 in squared space
+        // to match epsilon-expansion in actual distance space
+        let factor = 1.0 + self.epsilon;
+        let threshold = closest_dist * factor * factor;
 
-        // Select all centroids within threshold
-        let mut candidates: Vec<usize> = distances
+        // Select all centroids within threshold, up to max_replicas
+        distances
             .iter()
             .take(self.max_replicas)
             .filter(|(_, dist)| *dist <= threshold)
             .map(|(idx, _)| *idx)
-            .collect();
-
-        // Apply RNG rule to reduce redundancy
-        candidates = self.apply_rng_rule(vector, centroids, candidates, &distances);
-
-        candidates
+            .collect()
     }
 
     /// Apply Relative Neighborhood Graph rule to filter candidates
@@ -59,6 +57,7 @@ impl ClosureAssigner {
     /// - dist(i, vector) < dist(i, j)
     ///
     /// This ensures geometric diversity of assigned clusters
+    #[allow(dead_code)]
     fn apply_rng_rule(
         &self,
         _vector: &[f32],
@@ -148,8 +147,8 @@ mod tests {
     }
 
     #[test]
-    fn test_rng_rule_reduces_redundancy() {
-        // Create a scenario where RNG rule should filter out some candidates
+    fn test_threshold_selects_nearby_centroids() {
+        // Without RNG rule, all centroids within threshold are selected
         let centroids = vec![
             vec![0.0, 0.0],
             vec![0.5, 0.0],
@@ -164,8 +163,8 @@ mod tests {
 
         println!("Vector {:?} assigned to {:?}", v, assigned);
 
-        // RNG rule should have filtered out some redundant centroids
-        assert!(assigned.len() <= 3);
+        // With large epsilon, all centroids within threshold should be included
+        assert!(assigned.len() >= 2);
         assert!(assigned.contains(&0) || assigned.contains(&1));
     }
 

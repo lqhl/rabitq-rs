@@ -268,10 +268,8 @@ impl PyMstgIndex {
             .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Index not built yet."))?;
 
         // Estimate memory usage
-        let centroid_mem = index.centroid_index.memory_usage();
-        let posting_mem: usize = index.posting_lists.iter().map(|p| p.memory_size()).sum();
-
-        Ok(centroid_mem + posting_mem)
+        let mem_mb = MstgIndex::estimate_memory_mb(&index.centroid_index, &index.posting_lists);
+        Ok((mem_mb * 1024.0 * 1024.0) as usize)
     }
 
     /// Get number of vectors in index
@@ -315,11 +313,12 @@ impl PyMstgIndex {
             pyo3::exceptions::PyRuntimeError::new_err(format!("Load failed: {}", e))
         })?;
 
-        let dimension = if !index.posting_lists.is_empty() {
-            index.posting_lists[0].centroid.len()
-        } else {
-            0
-        };
+        let dimension = index
+            .posting_lists
+            .iter()
+            .next()
+            .map(|p| p.centroid.len())
+            .unwrap_or(0);
 
         let config = index.config.clone();
 

@@ -4,6 +4,7 @@
 //! including the HNSW graph structure without rebuilding.
 
 use super::*;
+use crate::mstg::hnsw::{CentroidData, DistBF16, DistFP16, DistINT8, HnswIndex};
 use crate::RabitqError;
 use crc32fast::Hasher;
 use std::fs::File;
@@ -111,14 +112,13 @@ impl MstgIndex {
         // Load HNSW graph
         index.load_hnsw(&path_str)?;
 
-        // Fix padded_dim (it's #[serde(skip)] so it's 0 after deserialization)
-        for plist in &mut index.posting_lists {
+        for plist in index.posting_lists.iter_mut() {
             plist.padded_dim = plist.centroid.len();
         }
 
         // Rebuild batch layouts for FastScan (batch_data is not serialized)
         println!("Rebuilding FastScan batch layouts...");
-        for plist in &mut index.posting_lists {
+        for plist in index.posting_lists.iter_mut() {
             plist.build_batch_layout();
         }
 
@@ -149,13 +149,20 @@ impl MstgIndex {
             write_u32(&mut writer, id, Some(&mut hasher))?;
         }
 
+        // 3.5. Save directory
+        let dir_bytes = bincode::serialize(&self.directory)
+            .map_err(|_e| RabitqError::InvalidPersistence("failed to serialize directory"))?;
+        write_u64(&mut writer, dir_bytes.len() as u64, Some(&mut hasher))?;
+        writer.write_all(&dir_bytes)?;
+        hasher.update(&dir_bytes);
+
         // 4. Save posting lists
         write_u64(
             &mut writer,
             self.posting_lists.len() as u64,
             Some(&mut hasher),
         )?;
-        for plist in &self.posting_lists {
+        for plist in self.posting_lists.iter() {
             let plist_bytes = bincode::serialize(plist)
                 .map_err(|_| RabitqError::InvalidPersistence("failed to serialize posting list"))?;
             write_u64(&mut writer, plist_bytes.len() as u64, Some(&mut hasher))?;
@@ -205,41 +212,68 @@ impl MstgIndex {
             centroid_ids.push(read_u32(&mut reader, Some(&mut hasher))?);
         }
 
-        // 4. Load posting lists
-        let num_plists = read_u64(&mut reader, Some(&mut hasher))? as usize;
-        let mut posting_lists = Vec::with_capacity(num_plists);
-        for _ in 0..num_plists {
-            let plist_len = read_u64(&mut reader, Some(&mut hasher))? as usize;
-            let mut plist_bytes = vec![0u8; plist_len];
-            reader.read_exact(&mut plist_bytes)?;
-            hasher.update(&plist_bytes);
+        // 3.5. Load directory
+        let dir_len = read_u64(&mut reader, Some(&mut hasher))? as usize;
+        let mut dir_bytes = vec![0u8; dir_len];
+        reader.read_exact(&mut dir_bytes)?;
+        hasher.update(&dir_bytes);
 
-            let plist: PostingList = bincode::deserialize(&plist_bytes).map_err(|_| {
-                RabitqError::InvalidPersistence("failed to deserialize posting list")
-            })?;
-            posting_lists.push(plist);
-        }
+        let directory: PostingListDirectory = bincode::deserialize(&dir_bytes)
+            .map_err(|_| RabitqError::InvalidPersistence("failed to deserialize directory"))?;
 
-        // 5. Verify checksum
-        let stored_checksum = read_u32(&mut reader, None)?;
+        // 4. Memory map the posting lists
+        let base_offset = std::io::Seek::stream_position(&mut reader)? as usize;
+        let file = reader.into_inner(); // Get file back
+        let file_len = file.metadata()?.len() as usize;
+
+        let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
+
+        // Complete the checksum over the remaining bytes (except the last 4 bytes which ARE the checksum)
+        hasher.update(&mmap[base_offset..file_len - 4]);
+
+        let mut stored_checksum_bytes = [0u8; 4];
+        stored_checksum_bytes.copy_from_slice(&mmap[file_len - 4..file_len]);
+        let stored_checksum = u32::from_le_bytes(stored_checksum_bytes);
+
         let computed_checksum = hasher.finalize();
         if stored_checksum != computed_checksum {
             return Err(RabitqError::InvalidPersistence("checksum mismatch"));
         }
 
-        // Reconstruct centroid vectors from posting lists
-        let centroid_vecs: Vec<Vec<f32>> =
-            posting_lists.iter().map(|p| p.centroid.clone()).collect();
+        // Reconstruct centroid vectors? Wait, we need the centroid representations for CentroidIndex.
+        // It's expensive to deserialize them all from disk now, but we'll do it sequentially once here
+        // in order to build the HNSW graph (since HNSW graph is NOT mapped, it's loaded from .hnsw).
+        // Wait! The centroids themselves are loaded inside load_hnsw from .hnsw!
+        // CentroidIndex::build is just called with empty centroids because load_hnsw replaces them!
+        // No, load_hnsw only loads the HNSW index cache. CentroidIndex MUST have the `centroids` array.
+        // Because load_hnsw only populates `hnsw_cache` in CentroidIndex.
+
+        // We must extract centroid vectors.
+        let mut centroid_vecs: Vec<Vec<f32>> = Vec::with_capacity(num_centroids);
+        let mut offset = base_offset + 8; // skip num_plists
+
+        for _ in 0..num_centroids {
+            let plist_len =
+                u64::from_le_bytes(mmap[offset..offset + 8].try_into().unwrap()) as usize;
+            offset += 8;
+            let plist: PostingList = bincode::deserialize(&mmap[offset..offset + plist_len])
+                .map_err(|_| {
+                    RabitqError::InvalidPersistence("failed to deserialize posting list")
+                })?;
+            centroid_vecs.push(plist.centroid);
+            offset += plist_len;
+        }
 
         let centroid_index =
             CentroidIndex::build(centroid_vecs, centroid_ids, config.centroid_precision);
 
-        let directory = PostingListDirectory::new();
+        // Directory is loaded from file
+        let posting_lists_data = PostingDataSource::Mmap(mmap, base_offset as u64 + 8); // +8 to skip num_plists prefix
 
         Ok(Self {
             config,
             centroid_index,
-            posting_lists,
+            posting_lists: posting_lists_data,
             directory,
         })
     }
@@ -274,12 +308,17 @@ impl CentroidIndex {
         self.ensure_hnsw_built();
 
         let cache = self.hnsw_cache.read();
-        let hnsw = cache.as_ref().ok_or_else(|| "HNSW not built".to_string())?;
+        let hnsw_opt = cache.as_ref().ok_or_else(|| "HNSW not built".to_string())?;
 
-        // Use hnsw_rs file_dump API
         let path_string = base_path.to_string();
-        hnsw.file_dump(&path_string)
-            .map_err(|e| format!("HNSW dump failed: {}", e))?;
+
+        match hnsw_opt {
+            HnswIndex::FP32(h) => h.file_dump(&path_string),
+            HnswIndex::BF16(h) => h.file_dump(&path_string),
+            HnswIndex::FP16(h) => h.file_dump(&path_string),
+            HnswIndex::INT8(h) => h.file_dump(&path_string),
+        }
+        .map_err(|e| format!("HNSW dump failed: {}", e))?;
 
         Ok(())
     }
@@ -289,7 +328,6 @@ impl CentroidIndex {
         use hnsw_rs::hnswio::*;
         use hnsw_rs::prelude::*;
 
-        // Prepare directory and basename for hnsw_rs loader
         let path = PathBuf::from(base_path);
         let dir = path
             .parent()
@@ -301,25 +339,43 @@ impl CentroidIndex {
             .ok_or_else(|| "invalid path".to_string())?
             .to_string();
 
-        // Load HNSW using hnsw_rs API
         let hnswio = HnswIo::new(dir, basename);
 
-        // Load with distance function
-        let hnsw: Hnsw<f32, DistL2> = hnswio
-            .load_hnsw_with_dist(DistL2 {})
-            .map_err(|e| format!("HNSW load failed: {}", e))?;
+        let hnsw_index = match &self.centroids {
+            CentroidData::FP32(_) => {
+                let hnsw: Hnsw<f32, DistL2> = hnswio
+                    .load_hnsw_with_dist(DistL2 {})
+                    .map_err(|e| format!("HNSW load failed: {}", e))?;
+                let hnsw_static: Hnsw<'static, f32, DistL2> = unsafe { std::mem::transmute(hnsw) };
+                HnswIndex::FP32(hnsw_static)
+            }
+            CentroidData::BF16(_) => {
+                let hnsw: Hnsw<u16, DistBF16> = hnswio
+                    .load_hnsw_with_dist(DistBF16 {})
+                    .map_err(|e| format!("HNSW load failed: {}", e))?;
+                let hnsw_static: Hnsw<'static, u16, DistBF16> =
+                    unsafe { std::mem::transmute(hnsw) };
+                HnswIndex::BF16(hnsw_static)
+            }
+            CentroidData::FP16(_) => {
+                let hnsw: Hnsw<half::f16, DistFP16> = hnswio
+                    .load_hnsw_with_dist(DistFP16 {})
+                    .map_err(|e| format!("HNSW load failed: {}", e))?;
+                let hnsw_static: Hnsw<'static, half::f16, DistFP16> =
+                    unsafe { std::mem::transmute(hnsw) };
+                HnswIndex::FP16(hnsw_static)
+            }
+            CentroidData::INT8 { scale, .. } => {
+                let hnsw: Hnsw<i8, DistINT8> = hnswio
+                    .load_hnsw_with_dist(DistINT8 { scale: *scale })
+                    .map_err(|e| format!("HNSW load failed: {}", e))?;
+                let hnsw_static: Hnsw<'static, i8, DistINT8> = unsafe { std::mem::transmute(hnsw) };
+                HnswIndex::INT8(hnsw_static)
+            }
+        };
 
-        // SAFETY: We're converting the loaded HNSW to 'static lifetime
-        // This is safe because:
-        // 1. The HNSW owns its data (loaded from file)
-        // 2. It will live as long as the CentroidIndex
-        // 3. centroid_vecs is stable (in a Box)
-        let hnsw_static: Hnsw<'static, f32, DistL2> = unsafe { std::mem::transmute(hnsw) };
-
-        // Update cache
         let mut cache = self.hnsw_cache.write();
-        *cache = Some(hnsw_static);
-
+        *cache = Some(hnsw_index);
         Ok(())
     }
 
@@ -370,7 +426,7 @@ mod tests {
         let loaded_index = MstgIndex::load_from_path(&path).unwrap();
 
         // Verify basic properties
-        assert_eq!(index.posting_lists.len(), loaded_index.posting_lists.len());
+        assert_eq!(index.directory.len(), loaded_index.directory.len());
         assert_eq!(
             index.centroid_index.len(),
             loaded_index.centroid_index.len()

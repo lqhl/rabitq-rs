@@ -23,11 +23,13 @@ pub mod io;
 pub mod search;
 
 // Re-exports
+pub use builder::MstgBuilder;
 pub use closure::ClosureAssigner;
 pub use clustering::{Cluster, HierarchicalClustering};
 pub use config::{MstgConfig, ScalarPrecision, SearchParams};
 pub use hnsw::CentroidIndex;
-pub use index::{MstgIndex, SearchResult};
+pub use index::{MstgIndex, PostingDataSource};
 pub use metadata::{PostingListDirectory, PostingListEntry};
 pub use posting_list::{PostingList, QuantizedVectorWithId};
 pub use scalar_quant::{BF16Vector, FP32Vector, QuantizedVector};
+pub use search::SearchResult;
