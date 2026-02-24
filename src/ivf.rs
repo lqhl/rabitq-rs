@@ -25,7 +25,6 @@ pub struct SearchParams {
     pub nprobe: usize,
 }
 
-
 fn write_u32<W: Write>(writer: &mut W, value: u32, hasher: Option<&mut Hasher>) -> io::Result<()> {
     let bytes = value.to_le_bytes();
     if let Some(h) = hasher {
@@ -2271,8 +2270,7 @@ mod batch_search_tests {
 
         // V1: Direct dot product
         let binary_code_unpacked = quantized.unpack_binary_code();
-        let binary_dot_v1 =
-            crate::simd::dot_u8_f32(&binary_code_unpacked, &rotated_query);
+        let binary_dot_v1 = crate::simd::dot_u8_f32(&binary_code_unpacked, &rotated_query);
         println!("V1 binary_dot: {:.6}", binary_dot_v1);
         println!(
             "First 16 binary_code_unpacked: {:?}",

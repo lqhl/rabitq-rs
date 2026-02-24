@@ -514,7 +514,8 @@ pub(crate) fn reconstruct_into(centroid: &[f32], quantized: &QuantizedVector, ou
     let ex_code = quantized.unpack_ex_code();
 
     for i in 0..centroid.len() {
-        let total_code = (ex_code[i] as u32 + ((binary_code[i] as u32) << quantized.ex_bits)) as f32;
+        let total_code =
+            (ex_code[i] as u32 + ((binary_code[i] as u32) << quantized.ex_bits)) as f32;
         output[i] = centroid[i] + quantized.delta * total_code + quantized.vl;
     }
 }

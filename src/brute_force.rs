@@ -183,7 +183,6 @@ fn tag_to_metric(tag: u8) -> Option<Metric> {
     }
 }
 
-
 /// Brute-force RaBitQ index without clustering.
 ///
 /// This index quantizes all vectors relative to a zero centroid and performs
@@ -461,7 +460,6 @@ impl BruteForceRabitqIndex {
             let mut ex_code_packed = vec![0u8; ex_packed_size];
             reader.read_exact(&mut ex_code_packed)?;
             hasher.update(&ex_code_packed);
-
 
             let delta = read_f32(&mut reader, Some(&mut hasher))?;
             let vl = read_f32(&mut reader, Some(&mut hasher))?;

@@ -132,7 +132,7 @@ impl<'a> MstgBuilder<'a> {
 
         for plist in &posting_lists {
             let size_bytes = bincode::serialized_size(plist).unwrap_or(0) as u32;
-            let avg_norm = plist.len() as f32; 
+            let avg_norm = plist.len() as f32;
 
             directory.add_entry(PostingListEntry {
                 cluster_id: plist.cluster_id,
