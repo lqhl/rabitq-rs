@@ -36,7 +36,7 @@ impl MstgIndex {
             .flat_map(|&cid| {
                 self.posting_lists
                     .with_posting_list(cid, &self.directory, |plist| {
-                        if plist.vectors.is_empty() {
+                        if plist.is_empty() {
                             return Vec::new();
                         }
                         self.search_posting_list_fastscan(&query_ctx, plist, &plist.batch_data)
@@ -102,12 +102,12 @@ impl MstgIndex {
             num_batches
         };
 
-        let mut results = Vec::with_capacity(plist.vectors.len());
+        let mut results = Vec::with_capacity(plist.len());
         let use_highacc = padded_dim > 2048;
 
         for batch_idx in 0..total_batches {
             let batch_start = batch_idx * simd::FASTSCAN_BATCH_SIZE;
-            let batch_end = (batch_start + simd::FASTSCAN_BATCH_SIZE).min(plist.vectors.len());
+            let batch_end = (batch_start + simd::FASTSCAN_BATCH_SIZE).min(plist.len());
             let actual_batch_size = batch_end - batch_start;
 
             // Get batch parameters
@@ -175,7 +175,7 @@ impl MstgIndex {
             // Collect results for this batch
             for (i, &distance) in est_distances.iter().enumerate().take(actual_batch_size) {
                 let global_idx = batch_start + i;
-                let vector_id = plist.vectors[global_idx].vector_id;
+                let vector_id = plist.ids[global_idx];
 
                 if distance.is_finite() {
                     // For L2 metric, clamp negative distances to 0 (due to quantization approximation errors)

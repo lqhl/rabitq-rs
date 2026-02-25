@@ -88,7 +88,7 @@ impl MstgIndex {
     }
 
     /// Estimate total memory usage in MB
-    pub(crate) fn estimate_memory_mb(
+    pub fn estimate_memory_mb(
         centroid_index: &CentroidIndex,
         posting_lists: &PostingDataSource,
     ) -> f32 {

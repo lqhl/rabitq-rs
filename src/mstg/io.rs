@@ -93,9 +93,10 @@ impl MstgIndex {
         Ok(())
     }
 
-    /// Load the index from a file
+    /// Load the index from files into memory (InMemory mode)
     ///
-    /// This loads from the files created by `save_to_path`.
+    /// All posting lists are fully deserialized into RAM. This gives the fastest
+    /// search performance but uses more memory.
     ///
     /// # Example
     /// ```no_run
@@ -105,22 +106,37 @@ impl MstgIndex {
     pub fn load_from_path<P: AsRef<Path>>(path: P) -> Result<Self, RabitqError> {
         let path_str = path.as_ref().to_string_lossy().to_string();
 
-        // Load main index
+        // Load main index using mmap internally, then convert to InMemory
         let index_path = format!("{}.mstg", path_str);
-        let mut index = Self::load_main_index(&index_path)?;
+        let mut index = Self::load_main_index_inmemory(&index_path)?;
 
         // Load HNSW graph
         index.load_hnsw(&path_str)?;
 
-        for plist in index.posting_lists.iter_mut() {
-            plist.padded_dim = plist.centroid.len();
-        }
+        Ok(index)
+    }
 
-        // Rebuild batch layouts for FastScan (batch_data is not serialized)
-        println!("Rebuilding FastScan batch layouts...");
-        for plist in index.posting_lists.iter_mut() {
-            plist.build_batch_layout();
-        }
+    /// Load the index from files using mmap (Disk mode)
+    ///
+    /// Only the centroid index (HNSW) and metadata directory are loaded into
+    /// memory. Posting lists stay on disk and are deserialized on-the-fly during
+    /// search via mmap. This uses much less memory but incurs per-query
+    /// deserialization + `build_batch_layout()` overhead.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use rabitq_rs::mstg::*;
+    /// let index = MstgIndex::load_from_path_mmap("my_index").unwrap();
+    /// ```
+    pub fn load_from_path_mmap<P: AsRef<Path>>(path: P) -> Result<Self, RabitqError> {
+        let path_str = path.as_ref().to_string_lossy().to_string();
+
+        // Load main index with mmap (posting lists stay on disk)
+        let index_path = format!("{}.mstg", path_str);
+        let mut index = Self::load_main_index_mmap(&index_path)?;
+
+        // Load HNSW graph
+        index.load_hnsw(&path_str)?;
 
         Ok(index)
     }
@@ -178,8 +194,22 @@ impl MstgIndex {
         Ok(())
     }
 
-    /// Load main index from a file
-    fn load_main_index(path: &str) -> Result<Self, RabitqError> {
+    /// Load header (magic, version, config, centroid IDs, directory) from file.
+    /// Returns (config, centroid_ids, directory, hasher, reader) positioned
+    /// right at the start of the posting list section.
+    #[allow(clippy::type_complexity)]
+    fn load_header(
+        path: &str,
+    ) -> Result<
+        (
+            MstgConfig,
+            Vec<u32>,
+            PostingListDirectory,
+            Hasher,
+            BufReader<File>,
+        ),
+        RabitqError,
+    > {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
         let mut hasher = Hasher::new();
@@ -221,14 +251,16 @@ impl MstgIndex {
         let directory: PostingListDirectory = bincode::deserialize(&dir_bytes)
             .map_err(|_| RabitqError::InvalidPersistence("failed to deserialize directory"))?;
 
-        // 4. Memory map the posting lists
-        let base_offset = std::io::Seek::stream_position(&mut reader)? as usize;
-        let file = reader.into_inner(); // Get file back
-        let file_len = file.metadata()?.len() as usize;
+        Ok((config, centroid_ids, directory, hasher, reader))
+    }
 
-        let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
-
-        // Complete the checksum over the remaining bytes (except the last 4 bytes which ARE the checksum)
+    /// Verify CRC32 checksum over the mmap'd remainder of the file.
+    fn verify_checksum(
+        mmap: &memmap2::Mmap,
+        base_offset: usize,
+        file_len: usize,
+        mut hasher: Hasher,
+    ) -> Result<(), RabitqError> {
         hasher.update(&mmap[base_offset..file_len - 4]);
 
         let mut stored_checksum_bytes = [0u8; 4];
@@ -239,18 +271,17 @@ impl MstgIndex {
         if stored_checksum != computed_checksum {
             return Err(RabitqError::InvalidPersistence("checksum mismatch"));
         }
+        Ok(())
+    }
 
-        // Reconstruct centroid vectors? Wait, we need the centroid representations for CentroidIndex.
-        // It's expensive to deserialize them all from disk now, but we'll do it sequentially once here
-        // in order to build the HNSW graph (since HNSW graph is NOT mapped, it's loaded from .hnsw).
-        // Wait! The centroids themselves are loaded inside load_hnsw from .hnsw!
-        // CentroidIndex::build is just called with empty centroids because load_hnsw replaces them!
-        // No, load_hnsw only loads the HNSW index cache. CentroidIndex MUST have the `centroids` array.
-        // Because load_hnsw only populates `hnsw_cache` in CentroidIndex.
-
-        // We must extract centroid vectors.
+    /// Extract centroid vectors from the mmap'd posting list data.
+    fn extract_centroids(
+        mmap: &memmap2::Mmap,
+        base_offset: usize,
+        num_centroids: usize,
+    ) -> Result<Vec<Vec<f32>>, RabitqError> {
         let mut centroid_vecs: Vec<Vec<f32>> = Vec::with_capacity(num_centroids);
-        let mut offset = base_offset + 8; // skip num_plists
+        let mut offset = base_offset + 8; // skip num_plists u64
 
         for _ in 0..num_centroids {
             let plist_len =
@@ -263,12 +294,90 @@ impl MstgIndex {
             centroid_vecs.push(plist.centroid);
             offset += plist_len;
         }
+        Ok(centroid_vecs)
+    }
+
+    /// Load main index into InMemory mode: all posting lists are deserialized
+    /// into RAM with batch layouts pre-built.
+    fn load_main_index_inmemory(path: &str) -> Result<Self, RabitqError> {
+        let (config, centroid_ids, directory, hasher, mut reader) = Self::load_header(path)?;
+        let num_centroids = centroid_ids.len();
+
+        // Mmap for checksum verification and posting list reading
+        let base_offset = std::io::Seek::stream_position(&mut reader)? as usize;
+        let file = reader.into_inner();
+        let file_len = file.metadata()?.len() as usize;
+        let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
+
+        Self::verify_checksum(&mmap, base_offset, file_len, hasher)?;
+
+        // Deserialize all posting lists into memory
+        println!(
+            "Deserializing {} posting lists into memory...",
+            num_centroids
+        );
+        let mut posting_lists: Vec<PostingList> = Vec::with_capacity(num_centroids);
+        let mut centroid_vecs: Vec<Vec<f32>> = Vec::with_capacity(num_centroids);
+        let mut offset = base_offset + 8; // skip num_plists u64
+
+        for _ in 0..num_centroids {
+            let plist_len =
+                u64::from_le_bytes(mmap[offset..offset + 8].try_into().unwrap()) as usize;
+            offset += 8;
+            let mut plist: PostingList = bincode::deserialize(&mmap[offset..offset + plist_len])
+                .map_err(|_| {
+                    RabitqError::InvalidPersistence("failed to deserialize posting list")
+                })?;
+            plist.padded_dim = plist.centroid.len();
+            centroid_vecs.push(plist.centroid.clone());
+            posting_lists.push(plist);
+            offset += plist_len;
+        }
+
+        // Rebuild FastScan batch layouts (not serialized)
+        println!("Rebuilding FastScan batch layouts...");
+        for plist in posting_lists.iter_mut() {
+            plist.build_batch_layout();
+        }
 
         let centroid_index =
             CentroidIndex::build(centroid_vecs, centroid_ids, config.centroid_precision);
 
-        // Directory is loaded from file
-        let posting_lists_data = PostingDataSource::Mmap(mmap, base_offset as u64 + 8); // +8 to skip num_plists prefix
+        Ok(Self {
+            config,
+            centroid_index,
+            posting_lists: PostingDataSource::InMemory(posting_lists),
+            directory,
+        })
+    }
+
+    /// Load main index in Mmap (disk) mode: posting lists stay on disk and are
+    /// deserialized on demand during search.
+    fn load_main_index_mmap(path: &str) -> Result<Self, RabitqError> {
+        let (config, centroid_ids, directory, hasher, mut reader) = Self::load_header(path)?;
+        let num_centroids = centroid_ids.len();
+
+        // Mmap the file
+        let base_offset = std::io::Seek::stream_position(&mut reader)? as usize;
+        let file = reader.into_inner();
+        let file_len = file.metadata()?.len() as usize;
+        let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
+
+        Self::verify_checksum(&mmap, base_offset, file_len, hasher)?;
+
+        // Extract centroid vectors (needed for CentroidIndex)
+        let centroid_vecs = Self::extract_centroids(&mmap, base_offset, num_centroids)?;
+
+        let centroid_index =
+            CentroidIndex::build(centroid_vecs, centroid_ids, config.centroid_precision);
+
+        // +8 to skip the num_plists u64 prefix
+        let posting_lists_data = PostingDataSource::Mmap(mmap, base_offset as u64 + 8);
+
+        println!(
+            "Loaded MSTG in disk mode: {} centroids, posting lists on mmap",
+            num_centroids
+        );
 
         Ok(Self {
             config,
@@ -445,6 +554,57 @@ mod tests {
         assert_eq!(results1[0].vector_id, results2[0].vector_id);
 
         // Clean up temp files
+        let _ = std::fs::remove_file(format!("{}.mstg", path));
+        let _ = std::fs::remove_file(format!("{}.hnsw.graph", path));
+        let _ = std::fs::remove_file(format!("{}.hnsw.data", path));
+    }
+
+    #[test]
+    fn test_save_load_mstg_mmap() {
+        let data = generate_test_data(10000, 128);
+        let config = MstgConfig {
+            max_posting_size: 20,
+            branching_factor: 8,
+            ..Default::default()
+        };
+
+        let index = MstgIndex::build(&data, config.clone()).unwrap();
+
+        let path = format!(
+            "/tmp/test_mstg_mmap_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        );
+        index.save_to_path(&path).unwrap();
+
+        // Load as mmap (disk mode)
+        let mmap_index = MstgIndex::load_from_path_mmap(&path).unwrap();
+
+        // Verify properties
+        assert_eq!(index.directory.len(), mmap_index.directory.len());
+        assert_eq!(index.centroid_index.len(), mmap_index.centroid_index.len());
+
+        // Posting lists should be Mmap variant
+        assert!(matches!(
+            mmap_index.posting_lists,
+            PostingDataSource::Mmap(_, _)
+        ));
+
+        // Search should work in mmap mode
+        let query = &data[0];
+        let params = SearchParams::balanced(10);
+
+        let results_mem = index.search(query, &params);
+        let results_mmap = mmap_index.search(query, &params);
+
+        assert!(!results_mem.is_empty());
+        assert!(!results_mmap.is_empty());
+        // Top result should match
+        assert_eq!(results_mem[0].vector_id, results_mmap[0].vector_id);
+
+        // Clean up
         let _ = std::fs::remove_file(format!("{}.mstg", path));
         let _ = std::fs::remove_file(format!("{}.hnsw.graph", path));
         let _ = std::fs::remove_file(format!("{}.hnsw.data", path));

@@ -306,19 +306,37 @@ impl PyMstgIndex {
         Ok(())
     }
 
-    /// Load index from file
+    /// Load index from file (InMemory mode - all data in RAM)
     #[staticmethod]
     fn load(path: &str) -> PyResult<Self> {
         let index = MstgIndex::load_from_path(path).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("Load failed: {}", e))
         })?;
 
-        let dimension = index
-            .posting_lists
-            .iter()
-            .next()
-            .map(|p| p.centroid.len())
-            .unwrap_or(0);
+        // Get dimension from centroid index (works for both InMemory and Mmap modes)
+        let dimension = index.centroid_index.dimension().unwrap_or(0);
+
+        let config = index.config.clone();
+
+        Ok(Self {
+            index: Some(index),
+            config,
+            dimension,
+        })
+    }
+
+    /// Load index from file using mmap (Disk mode - posting lists on disk)
+    ///
+    /// Only centroids and metadata are loaded into memory.
+    /// Posting lists are deserialized on-the-fly during search.
+    /// Uses much less memory but search is slower.
+    #[staticmethod]
+    fn load_mmap(path: &str) -> PyResult<Self> {
+        let index = MstgIndex::load_from_path_mmap(path).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Load mmap failed: {}", e))
+        })?;
+
+        let dimension = index.centroid_index.dimension().unwrap_or(0);
 
         let config = index.config.clone();
 
