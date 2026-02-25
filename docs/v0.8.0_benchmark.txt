@@ -1,0 +1,294 @@
+    Finished `release` profile [optimized] target(s) in 0.24s
+     Running `target/release/examples/bench_ivf_vs_mstg`
+
+========================================================
+  IVF vs MSTG-mem vs MSTG-disk Benchmark
+========================================================
+
+Loading data ...
+  loading dataset/cohere_100k_768d/train.parquet ...
+  loading dataset/cohere_100k_768d/test.parquet ...
+  loading dataset/cohere_100k_768d/neighbors.parquet ...
+  loaded: 100000 train vectors, 1000 queries, 1000 ground truth, dim=768
+
+  vectors  : 100000
+  queries  : 1000
+  dim      : 768
+  k        : 100
+  metric   : L2
+  load time: 865 ms
+
+--- IVF (nlist=316) ---
+Training k-means on original data (316 clusters, 30 iterations)...
+  K-means: 80896 points, 316 clusters, 30 iterations, 1 restarts
+    Restart 1/1: objective = 3.94e6
+K-means training complete
+Huge pages: DISABLED (compile with --features huge_pages to enable)
+Rotating data vectors...
+Rotating centroids...
+Quantizing vectors...
+  Quantized 15/316 clusters (4.7%)
+  Quantized 30/316 clusters (9.5%)
+  Quantized 45/316 clusters (14.2%)
+  Quantized 60/316 clusters (19.0%)
+  Quantized 75/316 clusters (23.7%)
+  Quantized 90/316 clusters (28.5%)
+  Quantized 105/316 clusters (33.2%)
+  Quantized 120/316 clusters (38.0%)
+  Quantized 135/316 clusters (42.7%)
+  Quantized 150/316 clusters (47.5%)
+  Quantized 165/316 clusters (52.2%)
+  Quantized 180/316 clusters (57.0%)
+  Quantized 195/316 clusters (61.7%)
+  Quantized 210/316 clusters (66.5%)
+  Quantized 225/316 clusters (71.2%)
+  Quantized 240/316 clusters (75.9%)
+  Quantized 255/316 clusters (80.7%)
+  Quantized 270/316 clusters (85.4%)
+  Quantized 285/316 clusters (90.2%)
+  Quantized 300/316 clusters (94.9%)
+  Quantized 315/316 clusters (99.7%)
+  Quantized 316/316 clusters (100.0%)
+Quantization complete
+Building clusters with unified memory layout...
+Cluster construction complete
+  build    : 8098 ms
+  memory   : 71.3 MB
+
+    nprobe    recall@K     latency         QPS
+  --------  ----------  ----------  ----------
+         1       35.1%       347 us        2880
+         2       49.9%       469 us        2133
+         4       63.3%       668 us        1498
+         7       72.3%       828 us        1207
+         8       74.1%       894 us        1119
+        10       76.9%      1077 us         929
+        15       81.1%      1333 us         750
+        22       84.3%      1669 us         599
+        33       86.5%      2312 us         433
+        49       87.9%      2983 us         335
+        73       88.8%      4166 us         240
+       109       89.2%      5769 us         173
+       163       89.4%      8245 us         121
+       244       89.5%     11957 us          84
+       316       89.5%     19069 us          52
+
+--- MSTG-mem (epsilon=0.3) ---
+Building MSTG index for 100000 vectors
+Step 1: Hierarchical balanced clustering...
+Starting hierarchical clustering: 100000 vectors, max_size=1000, branching=8
+  Iteration 1: Splitting cluster of size 100000 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 4.80e6
+  Iteration 2: Splitting cluster of size 25294 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.01e6
+  Iteration 3: Splitting cluster of size 4184 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.58e5
+  Iteration 4: Splitting cluster of size 2062 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 7.44e4
+  Iteration 5: Splitting cluster of size 5307 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.90e5
+  Iteration 6: Splitting cluster of size 4295 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.60e5
+  Iteration 7: Splitting cluster of size 2641 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 9.59e4
+  Iteration 8: Splitting cluster of size 2126 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 7.81e4
+  Iteration 9: Splitting cluster of size 4678 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.60e5
+  Iteration 10: Splitting cluster of size 7679 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 3.04e5
+  Iteration 11: Splitting cluster of size 1162 into 8 subclusters
+  K-means: 1162 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 3.98e4
+  Iteration 12: Splitting cluster of size 1380 into 8 subclusters
+  K-means: 1380 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 5.13e4
+  Iteration 13: Splitting cluster of size 1470 into 8 subclusters
+  K-means: 1470 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 5.02e4
+  Iteration 14: Splitting cluster of size 11301 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 4.68e5
+  Iteration 15: Splitting cluster of size 1568 into 8 subclusters
+  K-means: 1568 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 6.62e4
+  Iteration 16: Splitting cluster of size 1469 into 8 subclusters
+  K-means: 1469 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 4.49e4
+  Iteration 17: Splitting cluster of size 2071 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 7.79e4
+  Iteration 18: Splitting cluster of size 1613 into 8 subclusters
+  K-means: 1613 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 6.97e4
+  Iteration 19: Splitting cluster of size 2163 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 5.75e4
+  Iteration 20: Splitting cluster of size 10315 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 5.02e5
+  Iteration 21: Splitting cluster of size 2075 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 8.60e4
+  Iteration 22: Splitting cluster of size 1604 into 8 subclusters
+  K-means: 1604 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 6.68e4
+  Iteration 23: Splitting cluster of size 1955 into 8 subclusters
+  K-means: 1955 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 8.62e4
+  Iteration 24: Splitting cluster of size 2760 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.31e5
+  Iteration 25: Splitting cluster of size 1003 into 8 subclusters
+  K-means: 1003 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 4.22e4
+  Iteration 26: Splitting cluster of size 12890 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 6.93e5
+  Iteration 27: Splitting cluster of size 1395 into 8 subclusters
+  K-means: 1395 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 7.83e4
+  Iteration 28: Splitting cluster of size 1542 into 8 subclusters
+  K-means: 1542 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 8.17e4
+  Iteration 29: Splitting cluster of size 2049 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 9.92e4
+  Iteration 30: Splitting cluster of size 2312 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.05e5
+  Iteration 31: Splitting cluster of size 2186 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.10e5
+  Iteration 32: Splitting cluster of size 3393 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.73e5
+  Iteration 33: Splitting cluster of size 14881 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 6.94e5
+  Iteration 34: Splitting cluster of size 1844 into 8 subclusters
+  K-means: 1844 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 8.38e4
+  Iteration 35: Splitting cluster of size 2323 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 8.87e4
+  Iteration 36: Splitting cluster of size 1195 into 8 subclusters
+  K-means: 1195 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 4.87e4
+  Iteration 37: Splitting cluster of size 2310 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.09e5
+  Iteration 38: Splitting cluster of size 3343 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.35e5
+  Iteration 39: Splitting cluster of size 1928 into 8 subclusters
+  K-means: 1928 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 8.04e4
+  Iteration 40: Splitting cluster of size 1937 into 8 subclusters
+  K-means: 1937 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 8.99e4
+  Iteration 41: Splitting cluster of size 17628 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 7.44e5
+  Iteration 42: Splitting cluster of size 2131 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 9.04e4
+  Iteration 43: Splitting cluster of size 1854 into 8 subclusters
+  K-means: 1854 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 7.41e4
+  Iteration 44: Splitting cluster of size 2921 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.13e5
+  Iteration 45: Splitting cluster of size 2893 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.26e5
+  Iteration 46: Splitting cluster of size 2906 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.09e5
+  Iteration 47: Splitting cluster of size 3149 into 8 subclusters
+  K-means: 2048 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 1.12e5
+  Iteration 48: Splitting cluster of size 1773 into 8 subclusters
+  K-means: 1773 points, 8 clusters, 100 iterations, 1 restarts
+    Restart 1/1: objective = 5.04e4
+Hierarchical clustering complete: 337 final clusters
+  Created 337 clusters
+Step 2: Closure assignment with RNG rule...
+  Average replication factor: 4.96
+Step 3: Creating and quantizing posting lists...
+  Created 337 posting lists with 496181 total vectors
+Step 3.5: Building FastScan batch layouts...
+Step 4: Building centroid index...
+  Built centroid index with 337 centroids (BF16 precision)
+MSTG index build complete
+  Memory usage estimate: ~339.97 MB
+  build    : 12319 ms
+  repl     : 4.96x
+  memory   : 340.0 MB
+
+       profile    recall@K     latency         QPS      ef / eps
+  ------------  ----------  ----------  ----------  ------------
+   low-latency       98.0%      6748 us         148  ef=50  e=0.3
+  balanced-low       99.3%     12049 us          83  ef=100 e=0.5
+      balanced       99.4%     15655 us          64  ef=150 e=0.6
+  balanced-high       99.4%     16499 us          61  ef=200 e=0.8
+   high-recall       99.4%     22644 us          44  ef=300 e=1.0
+    max-recall       99.4%     27450 us          36  ef=500 e=1.5
+
+--- MSTG-disk (mmap, same index) ---
+  save     : 717 ms
+Loaded MSTG in disk mode: 337 centroids, posting lists on mmap
+  mmap load: 567 ms
+  memory   : 0.5 MB (centroid + directory only)
+
+       profile    recall@K     latency         QPS      ef / eps
+  ------------  ----------  ----------  ----------  ------------
+   low-latency       98.0%     21757 us          46  ef=50  e=0.3
+  balanced-low       99.3%     42030 us          24  ef=100 e=0.5
+      balanced       99.4%     61414 us          16  ef=150 e=0.6
+  balanced-high       99.4%     86928 us          12  ef=200 e=0.8
+   high-recall       99.4%    120058 us           8  ef=300 e=1.0
+    max-recall       99.4%     94674 us          11  ef=500 e=1.5
+
+========================================================
+  Head-to-head (matched recall)
+========================================================
+
+  MSTG-mem vs IVF:
+    recall ~98%: MSTG-mem(mem-low-latency) 6748us vs IVF(nprobe=316) 19069us => MSTG-mem 2.83x faster
+    recall ~99%: MSTG-mem(mem-balanced-low) 12049us vs IVF(nprobe=316) 19069us => MSTG-mem 1.58x faster
+    recall ~99%: MSTG-mem(mem-balanced) 15655us vs IVF(nprobe=316) 19069us => MSTG-mem 1.22x faster
+    recall ~99%: MSTG-mem(mem-balanced-high) 16499us vs IVF(nprobe=316) 19069us => MSTG-mem 1.16x faster
+    recall ~99%: MSTG-mem(mem-high-recall) 22644us vs IVF(nprobe=316) 19069us => IVF 1.19x faster
+    recall ~99%: MSTG-mem(mem-max-recall) 27450us vs IVF(nprobe=316) 19069us => IVF 1.44x faster
+
+  MSTG-disk vs MSTG-mem:
+    recall ~98%: disk 21757us vs mem 6748us => disk 3.2x slower
+    recall ~99%: disk 42030us vs mem 12049us => disk 3.5x slower
+    recall ~99%: disk 61414us vs mem 15655us => disk 3.9x slower
+    recall ~99%: disk 86928us vs mem 16499us => disk 5.3x slower
+    recall ~99%: disk 120058us vs mem 22644us => disk 5.3x slower
+    recall ~99%: disk 94674us vs mem 27450us => disk 3.4x slower
+
+========================================================
+  Summary
+========================================================
+
+  MSTG config: epsilon=0.3, replication=4.96x
+  MSTG-mem : build=12319ms, memory=340.0MB
+  MSTG-disk: save=717ms, mmap_load=567ms, memory=0.5MB
+  Build: IVF 8098ms vs MSTG 12319ms (IVF 1.5x faster)
+  Peak recall: IVF 89.5% (nprobe=316) vs MSTG-mem 99.4% (mem-max-recall)
+  Peak recall: MSTG-mem 99.4% (mem-max-recall) vs MSTG-disk 99.4% (disk-max-recall)
+
+Done.

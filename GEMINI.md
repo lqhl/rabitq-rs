@@ -8,8 +8,8 @@
 **Core Technology:**
 *   **RaBitQ:** Rapid Binary Quantization for compressing high-dimensional vectors.
 *   **IVF:** Inverted File Index (production-ready).
-*   **MSTG:** Multi-Scale Tree Graph (experimental, hybrid memory-disk index).
-*   **HNSW:** Hierarchical Navigable Small World graphs (used for centroid navigation in MSTG).
+*   **MSTG:** Multi-Scale Tree Graph (High-performance hybrid memory-disk index).
+*   **HNSW:** Hierarchical Navigable Small World graphs.
 
 **Key Features:**
 *   **High Compression:** Up to 32x memory reduction compared to raw vectors.
@@ -22,7 +22,7 @@
 *   `src/`: Core Rust source code.
     *   `lib.rs`: Crate entry point.
     *   `ivf.rs`: Production-ready IVF implementation.
-    *   `mstg/`: Experimental MSTG implementation (Hierarchical clustering, HNSW navigation).
+    *   `mstg/`: MSTG implementation (Hierarchical clustering, HNSW navigation).
     *   `quantizer.rs`: RaBitQ quantization logic.
     *   `simd.rs`: Low-level SIMD intrinsics.
     *   `python_bindings.rs`: Python API definitions.
@@ -59,7 +59,7 @@
 *   **Local:** `make bench-local` (requires `ann-benchmarks` repo sibling)
 *   **Docker:** `make bench-docker`
 
-## MSTG Architecture (Experimental)
+## MSTG Architecture
 
 MSTG is designed for billion-scale datasets, combining memory efficiency with high recall.
 

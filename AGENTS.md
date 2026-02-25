@@ -54,5 +54,5 @@
 - PRs should include a concise description, test results (commands run), and note any benchmark changes if relevant.
 
 ## Notes & Constraints
-- MSTG is experimental; call out behavior changes or API shifts in PR descriptions.
+- Call out behavior changes or API shifts in MSTG/bindings in PR descriptions.
 - Python bindings are optional; ensure `--features python` is used when touching binding code.

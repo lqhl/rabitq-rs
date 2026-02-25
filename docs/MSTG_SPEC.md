@@ -710,7 +710,7 @@ fn bf16_to_fp32(x: u16) -> f32 {
 - Usage examples
 - Performance tuning guide
 
-## Experimental Validation
+## Performance Evaluation
 
 ### Comparison Baselines
 
