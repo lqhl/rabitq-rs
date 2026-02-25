@@ -70,7 +70,7 @@ impl Default for MstgConfig {
             balance_weight: 1.0,
 
             // Closure assignment
-            closure_epsilon: 0.15,
+            closure_epsilon: 0.02,
             max_replicas: 8,
 
             // RaBitQ

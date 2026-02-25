@@ -1,5 +1,6 @@
-    Finished `release` profile [optimized] target(s) in 0.24s
-     Running `target/release/examples/bench_ivf_vs_mstg`
+   Compiling rabitq-rs v0.8.0 (/Users/qliu/workspace/rabitq-rs)
+    Finished `release` profile [optimized] target(s) in 1m 05s
+     Running `target/release/examples/bench_ivf_vs_mstg --epsilon 0.02`
 
 ========================================================
   IVF vs MSTG-mem vs MSTG-disk Benchmark
@@ -16,7 +17,7 @@ Loading data ...
   dim      : 768
   k        : 100
   metric   : L2
-  load time: 865 ms
+  load time: 871 ms
 
 --- IVF (nlist=316) ---
 Training k-means on original data (316 clusters, 30 iterations)...
@@ -52,28 +53,28 @@ Quantizing vectors...
 Quantization complete
 Building clusters with unified memory layout...
 Cluster construction complete
-  build    : 8098 ms
+  build    : 7528 ms
   memory   : 71.3 MB
 
     nprobe    recall@K     latency         QPS
   --------  ----------  ----------  ----------
-         1       35.1%       347 us        2880
-         2       49.9%       469 us        2133
-         4       63.3%       668 us        1498
-         7       72.3%       828 us        1207
-         8       74.1%       894 us        1119
-        10       76.9%      1077 us         929
-        15       81.1%      1333 us         750
-        22       84.3%      1669 us         599
-        33       86.5%      2312 us         433
-        49       87.9%      2983 us         335
-        73       88.8%      4166 us         240
-       109       89.2%      5769 us         173
-       163       89.4%      8245 us         121
-       244       89.5%     11957 us          84
-       316       89.5%     19069 us          52
+         1       35.1%       345 us        2899
+         2       49.9%       466 us        2145
+         4       63.3%       624 us        1602
+         7       72.3%       883 us        1133
+         8       74.1%       878 us        1140
+        10       76.9%       996 us        1004
+        15       81.1%      1263 us         792
+        22       84.3%      1621 us         617
+        33       86.5%      2153 us         465
+        49       87.9%      2980 us         336
+        73       88.8%      4042 us         247
+       109       89.2%      5726 us         175
+       163       89.4%      8056 us         124
+       244       89.5%     11647 us          86
+       316       89.5%     13680 us          73
 
---- MSTG-mem (epsilon=0.3) ---
+--- MSTG-mem (epsilon=0.02) ---
 Building MSTG index for 100000 vectors
 Step 1: Hierarchical balanced clustering...
 Starting hierarchical clustering: 100000 vectors, max_size=1000, branching=8
@@ -224,71 +225,71 @@ Starting hierarchical clustering: 100000 vectors, max_size=1000, branching=8
 Hierarchical clustering complete: 337 final clusters
   Created 337 clusters
 Step 2: Closure assignment with RNG rule...
-  Average replication factor: 4.96
+  Average replication factor: 1.56
 Step 3: Creating and quantizing posting lists...
-  Created 337 posting lists with 496181 total vectors
+  Created 337 posting lists with 156435 total vectors
 Step 3.5: Building FastScan batch layouts...
 Step 4: Building centroid index...
   Built centroid index with 337 centroids (BF16 precision)
 MSTG index build complete
-  Memory usage estimate: ~339.97 MB
-  build    : 12319 ms
-  repl     : 4.96x
-  memory   : 340.0 MB
+  Memory usage estimate: ~110.80 MB
+  build    : 7359 ms
+  repl     : 1.56x
+  memory   : 110.8 MB
 
        profile    recall@K     latency         QPS      ef / eps
   ------------  ----------  ----------  ----------  ------------
-   low-latency       98.0%      6748 us         148  ef=50  e=0.3
-  balanced-low       99.3%     12049 us          83  ef=100 e=0.5
-      balanced       99.4%     15655 us          64  ef=150 e=0.6
-  balanced-high       99.4%     16499 us          61  ef=200 e=0.8
-   high-recall       99.4%     22644 us          44  ef=300 e=1.0
-    max-recall       99.4%     27450 us          36  ef=500 e=1.5
+   low-latency       83.2%       894 us        1119  ef=50  e=0.3
+  balanced-low       86.9%      1700 us         588  ef=100 e=0.5
+      balanced       87.2%      2551 us         392  ef=150 e=0.6
+  balanced-high       87.4%      3508 us         285  ef=200 e=0.8
+   high-recall       87.5%      4766 us         210  ef=300 e=1.0
+    max-recall       87.5%      5332 us         188  ef=500 e=1.5
 
 --- MSTG-disk (mmap, same index) ---
-  save     : 717 ms
+  save     : 130 ms
 Loaded MSTG in disk mode: 337 centroids, posting lists on mmap
-  mmap load: 567 ms
+  mmap load: 98 ms
   memory   : 0.5 MB (centroid + directory only)
 
        profile    recall@K     latency         QPS      ef / eps
   ------------  ----------  ----------  ----------  ------------
-   low-latency       98.0%     21757 us          46  ef=50  e=0.3
-  balanced-low       99.3%     42030 us          24  ef=100 e=0.5
-      balanced       99.4%     61414 us          16  ef=150 e=0.6
-  balanced-high       99.4%     86928 us          12  ef=200 e=0.8
-   high-recall       99.4%    120058 us           8  ef=300 e=1.0
-    max-recall       99.4%     94674 us          11  ef=500 e=1.5
+   low-latency       83.2%      3049 us         328  ef=50  e=0.3
+  balanced-low       86.9%      6781 us         147  ef=100 e=0.5
+      balanced       87.2%     10195 us          98  ef=150 e=0.6
+  balanced-high       87.4%     15554 us          64  ef=200 e=0.8
+   high-recall       87.5%     21240 us          47  ef=300 e=1.0
+    max-recall       87.5%     23208 us          43  ef=500 e=1.5
 
 ========================================================
   Head-to-head (matched recall)
 ========================================================
 
   MSTG-mem vs IVF:
-    recall ~98%: MSTG-mem(mem-low-latency) 6748us vs IVF(nprobe=316) 19069us => MSTG-mem 2.83x faster
-    recall ~99%: MSTG-mem(mem-balanced-low) 12049us vs IVF(nprobe=316) 19069us => MSTG-mem 1.58x faster
-    recall ~99%: MSTG-mem(mem-balanced) 15655us vs IVF(nprobe=316) 19069us => MSTG-mem 1.22x faster
-    recall ~99%: MSTG-mem(mem-balanced-high) 16499us vs IVF(nprobe=316) 19069us => MSTG-mem 1.16x faster
-    recall ~99%: MSTG-mem(mem-high-recall) 22644us vs IVF(nprobe=316) 19069us => IVF 1.19x faster
-    recall ~99%: MSTG-mem(mem-max-recall) 27450us vs IVF(nprobe=316) 19069us => IVF 1.44x faster
+    recall ~83%: MSTG-mem(mem-low-latency) 894us vs IVF(nprobe=22) 1621us => MSTG-mem 1.81x faster
+    recall ~87%: MSTG-mem(mem-balanced-low) 1700us vs IVF(nprobe=33) 2153us => MSTG-mem 1.27x faster
+    recall ~87%: MSTG-mem(mem-balanced) 2551us vs IVF(nprobe=49) 2980us => MSTG-mem 1.17x faster
+    recall ~87%: MSTG-mem(mem-balanced-high) 3508us vs IVF(nprobe=49) 2980us => IVF 1.18x faster
+    recall ~87%: MSTG-mem(mem-high-recall) 4766us vs IVF(nprobe=49) 2980us => IVF 1.60x faster
+    recall ~88%: MSTG-mem(mem-max-recall) 5332us vs IVF(nprobe=49) 2980us => IVF 1.79x faster
 
   MSTG-disk vs MSTG-mem:
-    recall ~98%: disk 21757us vs mem 6748us => disk 3.2x slower
-    recall ~99%: disk 42030us vs mem 12049us => disk 3.5x slower
-    recall ~99%: disk 61414us vs mem 15655us => disk 3.9x slower
-    recall ~99%: disk 86928us vs mem 16499us => disk 5.3x slower
-    recall ~99%: disk 120058us vs mem 22644us => disk 5.3x slower
-    recall ~99%: disk 94674us vs mem 27450us => disk 3.4x slower
+    recall ~83%: disk 3049us vs mem 894us => disk 3.4x slower
+    recall ~87%: disk 6781us vs mem 1700us => disk 4.0x slower
+    recall ~87%: disk 10195us vs mem 2551us => disk 4.0x slower
+    recall ~87%: disk 15554us vs mem 3508us => disk 4.4x slower
+    recall ~87%: disk 21240us vs mem 4766us => disk 4.5x slower
+    recall ~88%: disk 23208us vs mem 5332us => disk 4.4x slower
 
 ========================================================
   Summary
 ========================================================
 
-  MSTG config: epsilon=0.3, replication=4.96x
-  MSTG-mem : build=12319ms, memory=340.0MB
-  MSTG-disk: save=717ms, mmap_load=567ms, memory=0.5MB
-  Build: IVF 8098ms vs MSTG 12319ms (IVF 1.5x faster)
-  Peak recall: IVF 89.5% (nprobe=316) vs MSTG-mem 99.4% (mem-max-recall)
-  Peak recall: MSTG-mem 99.4% (mem-max-recall) vs MSTG-disk 99.4% (disk-max-recall)
+  MSTG config: epsilon=0.02, replication=1.56x
+  MSTG-mem : build=7359ms, memory=110.8MB
+  MSTG-disk: save=130ms, mmap_load=98ms, memory=0.5MB
+  Build: IVF 7528ms vs MSTG 7359ms (MSTG 1.0x faster)
+  Peak recall: IVF 89.5% (nprobe=316) vs MSTG-mem 87.5% (mem-max-recall)
+  Peak recall: MSTG-mem 87.5% (mem-max-recall) vs MSTG-disk 87.5% (disk-max-recall)
 
 Done.

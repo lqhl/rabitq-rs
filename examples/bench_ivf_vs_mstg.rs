@@ -573,7 +573,7 @@ fn main() {
     // =====================================================================
     //  MSTG (memory mode)
     // =====================================================================
-    let closure_eps = cfg.epsilon.unwrap_or(0.3);
+    let closure_eps = cfg.epsilon.unwrap_or(0.02);
 
     println!();
     println!("--- MSTG-mem (epsilon={}) ---", closure_eps);
