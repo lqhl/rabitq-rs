@@ -1,10 +1,6 @@
-# Repository Guidelines
+- If you encounter something surprising or confusing in this project, add it into this file (AGENTS.md).
+- If a test fails, investigate and fix the issue. Don't just ignore it.
 
-- after implementing a feature use fmt/clippy/test to ensure quality
-  ```bash
-  cargo fmt --all -- --check
-  cargo clippy --all-targets --all-features -- -D warnings
-  cargo test --all-targets --all-features
-  ```
-- this repo is hosted on GitHub. you can use `gh` to access it. (ask for help if not logged in)
-- this repo uses GitHub CI for continuous integration and release Rust crates.
+- After implementing a feature use fmt/clippy/test to ensure quality
+- This repo is hosted on GitHub. You can use `gh` to access it. (ask if not logged in)
+- This repo uses GitHub CI (defined in `.github/workflows`) for continuous integration and release Rust crates.
