@@ -8,7 +8,7 @@
 
 Pure Rust implementation of advanced vector quantization and search algorithms:
 - **RaBitQ quantization** with IVF (Inverted File) search - Production ready
-- **MSTG (Multi-Scale Tree Graph)** index - High performance (v0.8.0)
+- **MSTG (Multi-Scale Tree Graph)** index - High performance (v0.9.0)
 
 **Up to 32× memory compression** with significantly higher accuracy than traditional Product Quantization (PQ) or Scalar Quantization (SQ).
 
@@ -34,7 +34,7 @@ This library provides a **feature-complete** RaBitQ + IVF search engine with all
 
 ## MSTG: Multi-Scale Tree Graph Index
 
-**New in v0.5.0**: MSTG is a high-performance hybrid index combining hierarchical clustering with graph navigation. Since v0.8.0, it is production-ready for large-scale vector search.
+**New in v0.5.0**: MSTG is a high-performance hybrid index combining hierarchical clustering with graph navigation. Since v0.9.0, it is production-ready for large-scale vector search.
 
 ### Key Features
 
@@ -74,7 +74,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rabitq-rs = "0.5"
+rabitq-rs = "0.9"
 ```
 
 ### IVF+RaBitQ Index (Recommended for Production)
