@@ -1,0 +1,45 @@
+Command: cargo run --release --example bench_ivf_vs_mstg -- --epsilon 0.02
+Date: 2026-02-26
+Dataset: dataset/cohere_100k_768d (100k train, 1k query, k=100, L2)
+
+This file tracks post-v0.8.0 MSTG search changes:
+1) stage-2 ex-code refinement
+2) IVF-aligned online lower-bound pruning (batch_f_error + g_error + distk)
+3) shared FastScan+Refine kernel (used by IVF and MSTG)
+4) two-stage scheduler (bootstrap serial + parallel local heaps)
+
+Reference baseline: docs/v0.8.0_benchmark.txt
+
+MSTG-mem (current)
+profile         recall@100   latency(us)   QPS
+low-latency       92.8%         1720       581
+balanced-low      97.3%         2587       387
+balanced          97.8%         3164       316
+balanced-high     98.1%         4009       249
+high-recall       98.1%         4959       202
+max-recall        98.2%         5456       183
+
+MSTG-disk (current)
+profile         recall@100   latency(us)   QPS
+low-latency       92.8%         5471       183
+balanced-low      97.3%         9535       105
+balanced          97.8%        12787        78
+balanced-high     98.1%        16698        60
+high-recall       98.1%        22125        45
+max-recall        98.2%        26319        38
+
+Baseline (v0.8.0, from docs/v0.8.0_benchmark.txt)
+MSTG-mem: recall 83.2~87.5%, latency 894~5332us
+MSTG-disk: recall 83.2~87.5%, latency 3049~23208us
+
+Delta vs baseline (selected points)
+- mem low-latency: 83.2%@894us -> 92.8%@1720us
+- mem balanced:    87.2%@2551us -> 97.8%@3164us
+- mem max-recall:  87.5%@5332us -> 98.2%@5456us
+- disk low-latency:83.2%@3049us -> 92.8%@5471us
+- disk balanced:   87.2%@10195us -> 97.8%@12787us
+- disk max-recall: 87.5%@23208us -> 98.2%@26319us
+
+Delta vs pre-scheduler IVF-aligned version (same recall tier)
+- mem balanced: 9073us -> 3164us (~2.87x faster)
+- disk balanced: 40529us -> 12787us (~3.17x faster)
