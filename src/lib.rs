@@ -8,6 +8,7 @@ pub mod mstg;
 pub mod python_bindings;
 
 mod fastscan; // Shared FastScan batch distance computation
+mod fastscan_kernel; // Shared FastScan + refinement kernel
 mod kmeans;
 pub mod math;
 mod memory;

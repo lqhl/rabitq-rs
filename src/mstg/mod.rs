@@ -32,4 +32,4 @@ pub use index::{MstgIndex, PostingDataSource};
 pub use metadata::{PostingListDirectory, PostingListEntry};
 pub use posting_list::{PostingList, QuantizedVectorWithId};
 pub use scalar_quant::{BF16Vector, FP32Vector, QuantizedVector};
-pub use search::SearchResult;
+pub use search::{SearchDiagnostics, SearchResult};

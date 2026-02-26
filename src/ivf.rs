@@ -1909,16 +1909,29 @@ impl IvfRabitqIndex {
         // Check if we should use high-accuracy mode
         let use_highacc = self.padded_dim > 2048;
 
-        // Get the appropriate LUT
-        let (lut_regular, lut_highacc) = if use_highacc {
-            (None, query_precomp.lut_highacc.as_ref())
+        let lut_view = if use_highacc {
+            query_precomp.lut_highacc.as_ref().map(|lut| {
+                crate::fastscan_kernel::FastScanLutView::HighAcc {
+                    lut_low8: &lut.lut_low8,
+                    lut_high8: &lut.lut_high8,
+                    delta: lut.delta,
+                    sum_vl_lut: lut.sum_vl_lut,
+                }
+            })
         } else {
-            (query_precomp.lut.as_ref(), None)
+            query_precomp
+                .lut
+                .as_ref()
+                .map(|lut| crate::fastscan_kernel::FastScanLutView::Regular {
+                    lut_i8: &lut.lut_i8,
+                    delta: lut.delta,
+                    sum_vl_lut: lut.sum_vl_lut,
+                })
         };
 
-        if lut_regular.is_none() && lut_highacc.is_none() {
+        let Some(lut_view) = lut_view else {
             return; // No LUT available, fallback needed
-        }
+        };
 
         // Process complete batches (32 vectors each)
         let num_batches = cluster.num_complete_batches();
@@ -1948,60 +1961,20 @@ impl IvfRabitqIndex {
             let mut est_distances = [0.0f32; simd::FASTSCAN_BATCH_SIZE];
             let mut lower_bounds = [0.0f32; simd::FASTSCAN_BATCH_SIZE];
 
-            if use_highacc {
-                // High-accuracy mode using i32 accumulators
-                let mut accu_res_i32 = [0i32; simd::FASTSCAN_BATCH_SIZE];
-                let lut_ha = lut_highacc.unwrap();
-                simd::accumulate_batch_highacc_avx2(
-                    cluster.batch_bin_codes(batch_idx),
-                    &lut_ha.lut_low8,
-                    &lut_ha.lut_high8,
-                    self.padded_dim,
-                    &mut accu_res_i32,
-                );
-
-                // SIMD vectorized batch distance computation (matches C++ Eigen)
-                simd::compute_batch_distances_i32(
-                    &accu_res_i32,
-                    lut_ha.delta,
-                    lut_ha.sum_vl_lut,
-                    batch_f_add,
-                    batch_f_rescale,
-                    batch_f_error,
-                    g_add,
-                    g_error,
-                    query_precomp.k1x_sum_q,
-                    &mut ip_x0_qr_values,
-                    &mut est_distances,
-                    &mut lower_bounds,
-                );
-            } else {
-                // Regular mode using u16 accumulators
-                let mut accu_res = [0u16; simd::FASTSCAN_BATCH_SIZE];
-                let lut = lut_regular.unwrap();
-                simd::accumulate_batch_avx2(
-                    cluster.batch_bin_codes(batch_idx),
-                    &lut.lut_i8,
-                    self.padded_dim,
-                    &mut accu_res,
-                );
-
-                // SIMD vectorized batch distance computation (matches C++ Eigen)
-                simd::compute_batch_distances_u16(
-                    &accu_res,
-                    lut.delta,
-                    lut.sum_vl_lut,
-                    batch_f_add,
-                    batch_f_rescale,
-                    batch_f_error,
-                    g_add,
-                    g_error,
-                    query_precomp.k1x_sum_q,
-                    &mut ip_x0_qr_values,
-                    &mut est_distances,
-                    &mut lower_bounds,
-                );
-            }
+            crate::fastscan_kernel::compute_fastscan_batch(
+                lut_view,
+                cluster.batch_bin_codes(batch_idx),
+                self.padded_dim,
+                batch_f_add,
+                batch_f_rescale,
+                batch_f_error,
+                g_add,
+                g_error,
+                query_precomp.k1x_sum_q,
+                &mut ip_x0_qr_values,
+                &mut est_distances,
+                &mut lower_bounds,
+            );
 
             // Step 2: Process each vector in the batch (pruning and ex-code evaluation)
             // Distances are now pre-computed in vectorized fashion (matching C++ Eigen)
@@ -2019,22 +1992,12 @@ impl IvfRabitqIndex {
                 // Use pre-computed values (vectorized above)
                 let ip_x0_qr = ip_x0_qr_values[i];
                 let est_distance = est_distances[i];
-                let mut lower_bound = lower_bounds[i];
-
-                // Optimization: Only compute safety bounds when needed (non-finite case)
-                // This avoids unnecessary computation and branches in the common path
-                if !lower_bound.is_finite() {
-                    // Rare case: lower_bound is NaN or Infinity
-                    // Use conservative fallback based on metric
-                    lower_bound = match self.metric {
-                        Metric::L2 => 0.0, // Conservative: allow all candidates through
-                        Metric::InnerProduct => {
-                            // Conservative estimate based on query and centroid norms
-                            let max_dot = dot_query_centroid + query_precomp.query_norm;
-                            -max_dot
-                        }
-                    };
-                }
+                let lower_bound = crate::fastscan_kernel::sanitize_lower_bound(
+                    lower_bounds[i],
+                    self.metric,
+                    dot_query_centroid,
+                    query_precomp.query_norm,
+                );
 
                 // Step 3: Check against current k-th distance
                 let distk = if heap.len() < top_k {
@@ -2059,39 +2022,19 @@ impl IvfRabitqIndex {
                         diag.extended_evaluations += 1;
                     }
 
-                    // Extended code evaluation (C++-style on-demand unpacking)
-                    // Reference: C++ estimator.hpp:85-103 split_distance_boosting
-                    // Formula: f_add_ex + g_add + f_rescale_ex * (binary_scale * ip_x0_qr + ex_dot + kbxsumq)
-                    //
-                    // KEY OPTIMIZATION: Reuse ip_x0_qr computed by FastScan instead of recomputing binary_dot
-                    // C++ also uses ip_x0_qr here (see estimator.hpp:99)
-                    // This eliminates:
-                    //   - V1 structure access
-                    //   - Redundant dot product computation
-                    //   - Cache misses from scattered memory access
-                    //
-                    // OPTIMIZATION: Direct SIMD dot product on packed data (C++-style, Phase 3)
-                    // C++ directly operates on packed data via ip_func_ with C++-compatible packing format
-                    // Rust now matches this behavior:
-                    //   - No unpacking overhead (~15% speedup)
-                    //   - Direct SIMD operations on C++-compatible packed format
-                    //   - Function pointer selected at index construction time
-
-                    // Compute ex_code dot product directly on packed data (C++-style)
-                    let ex_code_packed = &cluster.ex_codes_packed[global_idx];
-                    let ex_dot = (self.ip_func)(
+                    distance = crate::fastscan_kernel::refine_distance_with_ex(
                         &query_precomp.rotated_query,
-                        ex_code_packed,
+                        &cluster.ex_codes_packed[global_idx],
                         self.padded_dim,
+                        self.ex_bits,
+                        ip_x0_qr,
+                        query_precomp.binary_scale,
+                        query_precomp.kbx_sum_q,
+                        g_add,
+                        cluster.f_add_ex[global_idx],
+                        cluster.f_rescale_ex[global_idx],
+                        Some(self.ip_func),
                     );
-
-                    // Compute distance using ip_x0_qr (not binary_dot!)
-                    // This matches C++ behavior and avoids redundant computation
-                    let total_term =
-                        query_precomp.binary_scale * ip_x0_qr + ex_dot + query_precomp.kbx_sum_q;
-                    distance = cluster.f_add_ex[global_idx]
-                        + g_add
-                        + cluster.f_rescale_ex[global_idx] * total_term;
                 }
 
                 if !distance.is_finite() {
